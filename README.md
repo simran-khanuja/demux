@@ -94,7 +94,7 @@ bash scripts/evaluation/run_collect_results_all.sh
 To collect results for a specific model and target configuration, run the following command. This will aggregate results over all strategies for the specified configuration.
 
 ```
-bash scripts/evaluation/run_collect_single_model.sh [MODEL_PATH]
+bash scripts/evaluation/run_collect_results_single_model.sh [MODEL_PATH]
 ```
 
 To visualize the embeddings of the unlabelled source data, target data and the selected data, for all the models and cofigs, run the following command. By default, this will generate a plot for the data selected from the last round, which includes data selected in all previous rounds. However, this can be controlled by setting the `al_round_to_show` variable in the script.
