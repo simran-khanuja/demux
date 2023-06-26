@@ -19,7 +19,6 @@ Code for DeMuX: Data-efficient Multilingual Learning
     - `evaluation`
     - `helper`
        - `l2v`
-    - `train`
 
 # Environment
 We use [Miniconda](https://docs.conda.io/en/latest/miniconda.html) to manage the environment. Our Python version is 3.10.11. To create the environment, run the following command:
