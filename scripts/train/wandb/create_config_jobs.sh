@@ -7,13 +7,9 @@ set -e
 JOB_DIR=scripts/train/wandb/jobs
 mkdir -p ${JOB_DIR}
 
-# models=( "xlm-roberta-large" "infoxlm-large" "rembert" )
-# datasets=( "PAN-X" "udpos" "xnli" "tydiqa" ) 
-# configs=( "hp" "mp" "lp" "geo" "lp-pool" )
-
-models=( "xlm-roberta-large" )
-datasets=( "xnli" ) 
-configs=( "hp" )
+models=( "xlm-roberta-large" "infoxlm-large" "rembert" )
+datasets=( "PAN-X" "udpos" "xnli" "tydiqa" ) 
+configs=( "hp" "mp" "lp" "geo" "lp-pool" )
 
 BUDGET="10000"
 SEED=42
