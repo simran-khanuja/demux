@@ -1,0 +1,80 @@
+udpos:
+  metric: seqeval
+  label_names:
+    - ADJ
+    - ADP
+    - ADV
+    - AUX
+    - CCONJ
+    - DET
+    - INTJ
+    - NOUN
+    - NUM
+    - PART
+    - PRON
+    - PROPN
+    - PUNCT
+    - SCONJ
+    - SYM
+    - VERB
+    - X
+  remove_columns:
+    - tokens
+    - pos_tags
+  task_type: token
+
+PAN-X:
+  metric: seqeval
+  label_names:
+    - O
+    - B-PER
+    - I-PER
+    - B-ORG
+    - I-ORG
+    - B-LOC
+    - I-LOC
+  remove_columns:
+    - tokens
+    - ner_tags
+    - langs
+  task_type: token
+
+xnli:
+  metric: f1
+  label_names:
+    - entailment
+    - neutral
+    - contradiction
+  remove_columns:
+    - premise
+    - hypothesis
+  task_type: sequence
+
+tydiqa:
+  metric: squad
+  remove_columns:
+    - id
+    - title
+    - context
+    - question
+    - answers
+  task_type: qa
+
+xnli:
+  metric: f1
+  label_names:
+    - entailment
+    - neutral
+    - contradiction
+  remove_columns:
+    - premise
+    - hypothesis
+  task_type: sequence
+
+opus100:
+  metric: sacrebleu
+  task_type: mt
+
+facebook/flores:
+  metric: sacrebleu
+  task_type: mt

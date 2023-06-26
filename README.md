@@ -59,7 +59,7 @@ bash scripts/train/run_ft_en.sh xlm-roberta-large udpos
 
 One can also fine-tune the model on other languages if desired, by specifying the language code in the `run_ft_en.sh` script.
 
-Note, for TyDiQA we first fine-tune the model on SQuAD v2, given the small size of TyDiQA. To do this, run the following command:
+Note, for TyDiQA we first fine-tune the model on SQuAD v2, given the small size of TyDiQA. Clone the HF `transformers` repo in your home directory. Then, run the following command:
 
 ```
 bash scripts/train/run_ft_squad_v2.sh [MODEL]
@@ -72,6 +72,7 @@ We describe five source and target language configurations in our paper: `target
 ```
 bash scripts/train/run_ft_al.sh [FT-MODEL_PATH] [DATASET] [CONFIG] [STRATEGY]
 ```
+Note that the configs for all datasets are given in `scripts/train/dataset-configs.yaml`. This file can be updated with custom dataset details.
 
 To fine-tune a model on all strategies, we have wandb sweep configs defined in `scripts/train/wandb/configs`. These configs can be created by running the following command: 
 ```
