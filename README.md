@@ -59,6 +59,12 @@ bash scripts/train/run_ft_en.sh xlm-roberta-large udpos
 
 One can also fine-tune the model on other languages if desired, by specifying the language code in the `run_ft_en.sh` script.
 
+Note, for TyDiQA we first fine-tune the model on SQuAD v2, given the small size of TyDiQA. To do this, run the following command:
+
+```
+bash scripts/train/run_ft_squad_v2.sh [MODEL]
+```
+
 
 ### Step 2: Fine-tune multilingual models on source languages using active learning
 We describe five source and target language configurations in our paper: `target_hp`, `target_mp`, `target_lp`, `target_geo` and `target_lp-pool`. Additionally, we have six supported strategies: `random`, `egalitarian`, `average_dist`, `knn_uncertainty`, `uncertainty` and `gold`. Please refer to the paper on details of the configurations and strategies. To fine-tune the above models for a configuration and strategy, run the following command:
