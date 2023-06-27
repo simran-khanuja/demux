@@ -86,7 +86,7 @@ This will create a sweep job for each config in `scripts/train/wandb/jobs`.
 
 
 ## Step 3: Collect and visualize results
-To collect results across strategies run so far, run the following command. This will aggregate results over all strategies for the specified configuration.
+To collect results across strategies run so far, run the following command. This will aggregate results over all strategies for the specified configuration. This script also collects the deltas in performance between the strategies for all configs.
 
 ```
 bash scripts/evaluation/run_collect_results_all.sh

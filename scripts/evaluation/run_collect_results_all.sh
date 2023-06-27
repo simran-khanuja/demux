@@ -10,6 +10,8 @@ budgets=( "10000" )
 AL_ROUNDS=5
 EPOCHS=10
 SEED=42
+STRATEGY_PREFIX="knn,uncertain,average" # this is to collect deltas of strategies from gold and egalitarian 
+
 for MODEL in "${models[@]}"
 do
   for DATASET in "${datasets[@]}"
@@ -41,11 +43,19 @@ do
           LR=1e-05
         fi
         HPARAM_SUFFIX="${LR}_${EPOCHS}_seed_${SEED}"
-        MODEL_PATH=./outputs/models/${MODEL}/${DATASET}/${CONFIG}/${BUDGET}/${HPARAM_SUFFIX}
+        MODEL_PATH=./outputs/models/${MODEL}/${DATASET}/target_${CONFIG}/${BUDGET}/${HPARAM_SUFFIX}
 
         python src/evaluation/collect_results.py \
         --model_path ${MODEL_PATH} \
         --al_rounds ${AL_ROUNDS}
+
+        
+        python src/evaluation/get_deltas.py \
+        --result_base_path "./outputs/models/${MODEL}/${DATASET}" \
+        --strategy_prefix "${STRATEGY_PREFIX}" \
+        --budget "${BUDGET}" \
+        --hparam_suffix "${HPARAM_SUFFIX}"
+       
       done
     done
   done
