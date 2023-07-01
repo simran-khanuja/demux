@@ -95,7 +95,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_config_file",
         type=str,
-        default="/home/skhanuja/multilingual-ft/scripts/train/dataset-configs.yaml",
+        default="scripts/train/dataset-configs.yaml",
         help="Dataset yaml config file containing info on labels, metrics, etc.",
     )
     parser.add_argument(
@@ -1032,23 +1032,6 @@ def main():
                 while num_iterations <= args.total_rounds:
                     logger.info(f"Starting active learning iteration {num_iterations}...")
                     if num_iterations == 1:
-                        # Find optimal k to start out with if strategy is knn_uncertainty
-                        # Get en dataset
-                        if args.strategy.endswith("k_find"):
-                            k, correlation_coefficients = find_optimal_k(en_processed_train_dataset, en_raw_train_dataset, processed_target_dataset, raw_target_dataset, model, accelerator, data_collator, args)
-                            args.k_value = k
-                            logger.info(f"Optimal k value is {k}")
-
-                            # Write correlation coefficients to file
-                            corr_coeffs_file = os.path.join(args.save_dataset_path, "corr_coeffs.txt")
-                            with open(corr_coeffs_file, "w") as f:
-                                for correlation_coefficient in correlation_coefficients:
-                                    f.write(str(correlation_coefficient) + "\t" + str(correlation_coefficients[correlation_coefficient]) + "\n")
-
-                        elif args.strategy.endswith("k_1"):
-                            args.k_value = 1
-                            logger.info(f"Setting k value to 1")
-
                         # Suffix creation for saving files
                         if "uncertainty" in args.strategy and args.task_type in ["token"]:
                             strategy_folder_name = args.strategy + "_margin_" + str(args.token_task_margin)
@@ -1076,36 +1059,6 @@ def main():
                             logger.info(f"Saving predictions to {args.pred_output_dir}")
                             logger.info(f"Saving embeddings to {args.save_embeddings_path}")
                         accelerator.wait_for_everyone()
-
-                    else:
-                        if args.strategy.endswith("k_find"):
-                            previous_iteration_raw_dataset = raw_train_dataset.select(selected_indices)
-                            # Process train dataset
-                            with accelerator.main_process_first():
-                                previous_iteration_processed_dataset = previous_iteration_raw_dataset.map(
-                                    partial(preprocess_datasets,
-                                        args=args,
-                                        remove_columns=args.remove_columns,
-                                        tokenizer=tokenizer,
-                                        dataset=args.dataset_name,
-                                        padding="max_length" if args.pad_to_max_length else False,
-                                        max_seq_length=args.max_seq_length,
-                                        train=True),
-                                        batched=True, 
-                                        remove_columns=args.remove_columns,
-                                    )
-
-                            k, correlation_coefficients = find_optimal_k(previous_iteration_processed_dataset, previous_iteration_raw_dataset, processed_target_dataset, raw_target_dataset, model, accelerator, data_collator, args)
-                            args.k_value = k
-                            logger.info(f"Optimal k value is {k}")
-
-                            # Write correlation coefficients to file
-                            with open(corr_coeffs_file, "a") as f:
-                                for correlation_coefficient in correlation_coefficients:
-                                    f.write(str(correlation_coefficient) + "\t" + str(correlation_coefficients[correlation_coefficient]) + "\n")
-                        elif args.strategy.endswith("k_1"):
-                            args.k_value = 1
-                            logger.info(f"Setting k value to 1")
 
                     # Load model from model path
                     model_path=output_dir_AL if num_iterations > 1 else args.model_name_or_path
