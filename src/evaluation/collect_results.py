@@ -55,7 +55,7 @@ def main():
         for dir in os.listdir(model_path):
             if os.path.isdir(os.path.join(model_path, dir)):
                 strategies.append(dir)
-    print(args.model_path)
+    logger.info("Model path: " + args.model_path)
     logger.info("Strategies: " + str(strategies))
     # If first strategy is gold, move it to the end
     if strategies[0].startswith("gold"):
@@ -67,7 +67,7 @@ def main():
     fp_val = open(os.path.join(output_path, "results_val.csv"), "w")
 
     for iteration in range(1, args.al_rounds + 1):
-        print(f"Collecting results for iteration {iteration}")
+        logger.info(f"Collecting results for iteration {iteration}")
         for idx, strategy in enumerate(strategies):
             logger.info(f"Collecting results for strategy {strategy}")
             strategy_model_path = model_path + f"/{strategy}"

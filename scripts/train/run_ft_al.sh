@@ -34,7 +34,7 @@ PAD_TO_MAX_LENGTH=true
 GRAD_ACC_STEPS=1
 DATASET_CONFIG_FILE="scripts/train/dataset-configs.yaml"
 
-CONFIGS=( "hp" "mp" "lp" "geo" "lpp" )
+CONFIGS=( "hp" "mp" "lp" "geo" "lp-pool" )
 
 if [ ${DATASET} == "PAN-X" ]; 
 then
