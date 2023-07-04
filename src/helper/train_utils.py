@@ -1,112 +1,54 @@
 import torch
 import collections
-from typing import Tuple
-import argparse
+from transformers import (
+    AutoModelForTokenClassification,
+    AutoModelForSequenceClassification,
+    AutoModelForQuestionAnswering,
+    AutoModelForSeq2SeqLM
+)
+import os
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from accelerate.logging import get_logger
 import numpy as np
-from find_correlation import calculate_embeddings
-import scipy
 
 logger = get_logger(__name__)
 
-def get_embeddings_and_uncertainty(
-    dataloader: DataLoader,
-    model: torch.nn.Module,
-    task_type: str,
-    accelerator: Accelerator,
-    args: argparse.Namespace,
-    embeddings: torch.Tensor,
-    uncertainty_margin: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Calculate embeddings and uncertainty margin.
+
+def get_model(model_path, config, tokenizer, accelerator, args):
+    logger.info("Loading model from %s", model_path)
+    with accelerator.main_process_first():
+        # Initialize model 
+        if args.task_type in ["token"]:
+            model = AutoModelForTokenClassification.from_pretrained(
+                model_path,
+                config=config,
+                cache_dir=args.cache_dir,
+            )
+        elif args.task_type in ["sequence"]:	
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_path,
+                config=config,
+                cache_dir=args.cache_dir,
+            )
+        elif args.task_type in ["qa"]:
+            model = AutoModelForQuestionAnswering.from_pretrained(
+                model_path,
+                config=config,
+                cache_dir=args.cache_dir,
+            )
+        elif args.task_type in ["mt"]:
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_path,
+                config=config,
+                cache_dir=args.cache_dir,
+            )
+            # Set model.config.decoder_start_token_id to decoder_target_language
+            model.config.decoder_start_token_id = tokenizer.lang_code_to_id[args.decoder_target_language]
     
-    Args:
-        dataloader (torch.utils.data.DataLoader): The data loader.
-        model (torch.nn.Module): The model.
-        task_type (str): The type of task (token, sequence, QA).
-        accelerator: Accelerator.
-        args: Arguments.
-        embeddings (torch.Tensor): Calculated embeddings.
-        uncertainty_margin (torch.Tensor): Calculated uncertainty margin.
-    
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor]: The embeddings and the uncertainty margin.
-    """
-    model, dataloader = accelerator.prepare(model, dataloader)
-    model.eval()
-
-    for step, batch in enumerate(dataloader):
-        with torch.no_grad():
-            batch_embeddings, batch_logits = calculate_embeddings(batch, accelerator.device, model, args.dataset_name, args.embedding_method)
-            embeddings = torch.cat((embeddings, batch_embeddings))
-            if task_type in ["token"]:
-                # Calculate train uncertainty margin
-                batch_log_softmax = torch.nn.functional.log_softmax(batch_logits, dim=2)
-                mask = batch["labels"] != -100
-                batch_log_softmax = batch_log_softmax*mask.unsqueeze(2)
-                batch_log_softmax_sorted, _ = torch.sort(batch_log_softmax, dim=2, descending=True)
-                uncertainty_margin_sample = batch_log_softmax_sorted[:,:,0] - batch_log_softmax_sorted[:,:,1]
-                # Find mean of the difference between the log softmax of the most probable class and the log softmax of the second most probable class
-                if args.token_task_margin == "min":
-                    margin_mask = uncertainty_margin_sample != 0
-                    masked_uncertainty_margin_sample = uncertainty_margin_sample.clone()
-                    masked_uncertainty_margin_sample[~margin_mask] = float('inf')
-                    uncertainty_margin_sample_min = torch.min(masked_uncertainty_margin_sample, dim=1)[0]
-                    uncertainty_margin = torch.cat((uncertainty_margin, uncertainty_margin_sample_min))
-                elif args.token_task_margin == "mean":
-                    uncertainty_margin_sample_mean = torch.sum(uncertainty_margin_sample, dim=1) / torch.sum(mask, dim=1)
-                    uncertainty_margin = torch.cat((uncertainty_margin, uncertainty_margin_sample_mean))
-                elif args.token_task_margin == "max":
-                    uncertainty_margin_sample_max = torch.max(uncertainty_margin_sample, dim=1)[0]
-                    uncertainty_margin = torch.cat((uncertainty_margin, uncertainty_margin_sample_max))
-                elif args.token_task_margin == "mnlp":
-                    uncertainty_margin_sample_mnlp = torch.sum(batch_log_softmax_sorted[:,:,0], dim=1) / torch.sum(mask, dim=1)
-                    uncertainty_margin = torch.cat((uncertainty_margin, uncertainty_margin_sample_mnlp))
-            elif task_type in ['sequence']:
-                batch_log_softmax = torch.nn.functional.log_softmax(batch_logits, dim=1)
-                batch_log_softmax_sorted, _ = torch.sort(batch_log_softmax, dim=1, descending=True)
-                uncertainty_margin = torch.cat((uncertainty_margin, batch_log_softmax_sorted[:,0] - batch_log_softmax_sorted[:,1]))
-            elif task_type in ['qa']:
-                start_logits =  torch.nn.functional.log_softmax(batch_logits[0], dim=1)
-                end_logits = torch.nn.functional.log_softmax(batch_logits[1], dim=1)
-                if args.qa_uncertainty_method == "logits":
-                    start_logits_max = torch.max(start_logits, dim=1)
-                    end_logits_max = torch.max(end_logits, dim=1)
-                    batch_uncertainty = start_logits_max.values + end_logits_max.values
-                elif args.qa_uncertainty_method == "margin":
-                    start_logits_sorted, _ = torch.sort(start_logits, dim=1, descending=True)
-                    end_logits_sorted, _ = torch.sort(end_logits, dim=1, descending=True)
-                    batch_uncertainty = (start_logits_sorted[:,0] - start_logits_sorted[:,1]) + (end_logits_sorted[:,0] - end_logits_sorted[:,1])
-                uncertainty_margin = torch.cat((uncertainty_margin, batch_uncertainty))
-                
-            if step%100==0:
-                logger.info(f'completed batch {step}')
-    return embeddings, uncertainty_margin
-
-
-def process_tydiqa_uncertainty(dataset, processed_dataset_before, uncertainty_margin, accelerator):
-    original_to_processed = collections.defaultdict(list)
-    for idx, example_id in enumerate(processed_dataset_before['example_id']):
-        original_to_processed[example_id].append(idx)
-
-    original_uncertainty = {}
-    for ind in original_to_processed.keys():
-        uncertainty = uncertainty_margin[original_to_processed[ind]]
-        uncertainty = torch.max(uncertainty)
-        original_uncertainty[ind] = uncertainty.item()
-
-    temp_uncertainty = []
-    for i in dataset['id']:
-        temp_uncertainty.append(original_uncertainty[i])
-
-    uncertainty_margin = torch.tensor(temp_uncertainty).to(accelerator.device)
-
-    del temp_uncertainty, original_uncertainty, original_to_processed, processed_dataset_before
-    return uncertainty_margin
+    accelerator.wait_for_everyone()
+    return model
 
 
 def postprocess_token_classification(predictions, labels, label_names):
@@ -375,141 +317,48 @@ def eval_dev_test(
     return dev_test_accuracies
 
 
-def find_optimal_k(
-    processed_source_dataset,
-    raw_source_dataset,
-    processed_target_dataset,
-    raw_target_dataset,
+def predict_test(
+    raw_test_datasets,
+    processed_test_datasets,
     model,
-    accelerator,
+    tokenizer, 
+    args, 
+    accelerator, 
+    metric, 
+    label_names, 
     data_collator,
-    args
+    pred_output_dir_AL
 ):
-    # Get embeddings of source and target datasets
-    if args.dataset_name in ['tydiqa']:
-        processed_source_dataset_before = processed_source_dataset
-        processed_target_dataset_before = processed_target_dataset
-        for i in ['offset_mapping', 'example_id', 'language']:
-            if i in processed_source_dataset.features:
-                processed_source_dataset = processed_source_dataset.remove_columns([i])
-            if i in processed_target_dataset.features:
-                processed_target_dataset = processed_target_dataset.remove_columns([i])
-
-    logger.info("Getting embeddings of source and target datasets")
-    source_dataloader = DataLoader(processed_source_dataset, collate_fn=data_collator, batch_size=args.inference_batch_size, shuffle=False)
-    target_dataloader = DataLoader(processed_target_dataset, collate_fn=data_collator, batch_size=args.inference_batch_size, shuffle=False)
-
-    # Embeddings
-    source_embeddings = torch.empty((0, model.config.hidden_size), dtype=torch.float32).to(accelerator.device)
-    target_embeddings = torch.empty((0, model.config.hidden_size), dtype=torch.float32).to(accelerator.device)
-
-    # Source loss and uncertainty margin
-    source_uncertainty_margin = torch.empty((0), dtype=torch.float32).to(accelerator.device)
-    target_uncertainty_margin = torch.empty((0), dtype=torch.float32).to(accelerator.device)
-
-    # Get embeddings of source and target datasets and calculate uncertainty margin
-    logger.info("Getting embeddings of source and target datasets and calculating uncertainty margin")
-    source_embeddings, source_uncertainty_margin = get_embeddings_and_uncertainty(
-        source_dataloader, model, args.task_type, accelerator, args, source_embeddings, source_uncertainty_margin)
-
-    target_embeddings, target_uncertainty_margin = get_embeddings_and_uncertainty(
-        target_dataloader, model, args.task_type, accelerator, args, target_embeddings, target_uncertainty_margin)
-    
-
-    if args.task_type in ["qa"]:
-        original_to_processed = collections.defaultdict(list)
-        for idx, example_id in enumerate(processed_source_dataset_before['example_id']):
-            original_to_processed[example_id].append(idx)
-        
-        original_to_processed_target = collections.defaultdict(list)
-        for idx, example_id in enumerate(processed_target_dataset_before['example_id']):
-            original_to_processed_target[example_id].append(idx)
-        
-        source_uncertainity = {}
-        target_uncertainity = {}
-        source_average_cls_embedding = {}
-        target_average_cls_embedding = {}
-        for ind in original_to_processed.keys():
-            uncertainity = source_uncertainty_margin[original_to_processed[ind]]
-            uncertainity = torch.max(uncertainity)
-            source_uncertainity[ind]=uncertainity 
-
-            # take the average of CLS Embeddings of all features within an example
-            source_average_cls_embedding[ind] = torch.mean(source_embeddings[original_to_processed[ind]],0).reshape(1,-1)
+    for language in processed_test_datasets:
+        # TODO: Can this be moved to loading / preprocessing?
+        processed_test_dataset = processed_test_datasets[language]
+        if args.task_type in ["qa"] and "example_id" in processed_test_dataset.features:
+            processed_test_dataset= processed_test_dataset.remove_columns(["example_id", "offset_mapping"])
             
-        
-        for ind in original_to_processed_target.keys():
-            uncertainity = target_uncertainty_margin[original_to_processed_target[ind]]
-            uncertainity = torch.max(uncertainity)
-            target_uncertainity[ind]=uncertainity
+        test_dataloader = DataLoader(processed_test_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
 
-            # take the average of CLS Embeddings of all features within an example
-            target_average_cls_embedding[ind] = torch.mean(target_embeddings[original_to_processed_target[ind]],0).reshape(1,-1)
-
-        temp_source_uncertainity = []
-        temp_target_uncertainity = []
-        temp_source_embeddings = torch.empty([0, model.config.hidden_size]).to(accelerator.device)
-        temp_target_embeddings = torch.empty([0, model.config.hidden_size]).to(accelerator.device)
-        for i in raw_source_dataset['id']:
-            temp_source_uncertainity.append(source_uncertainity[i].item())
-            temp_source_embeddings = torch.cat((temp_source_embeddings,source_average_cls_embedding[i]))
-            
-
-        for i in raw_target_dataset['id']:
-            temp_target_uncertainity.append(target_uncertainity[i].item())
-            temp_target_embeddings = torch.cat((temp_target_embeddings,target_average_cls_embedding[i]))
+        metric_to_track = "f1"
+        if args.task_type in ["token"]:
+            eval_metric, _ = eval_model_token_classification(model, test_dataloader, metric, label_names, accelerator)
+        elif args.task_type in ["sequence"]:
+            eval_metric, _ = eval_model_sequence_classification(model, test_dataloader, metric, accelerator)
+        elif args.task_type in ["qa"]:
+            eval_metric, _ = eval_model_question_answering(model, test_dataloader, metric,  processed_test_datasets[language], raw_test_datasets[language], accelerator)
+        elif args.task_type in ["mt"]:
+            eval_metric = eval_model_mt(args, tokenizer, model, test_dataloader, metric, accelerator)
+            metric_to_track = "score"
+        logger.info(f"test {metric_to_track} for {language}: {eval_metric[metric_to_track]}")
     
-        source_uncertainty_margin = torch.tensor(temp_source_uncertainity).to(accelerator.device)
-        target_uncertainty_margin = torch.tensor(temp_target_uncertainity).to(accelerator.device)
-        source_embeddings = temp_source_embeddings
-        target_embeddings = temp_target_embeddings
-        
-        del temp_source_uncertainity, source_uncertainity, original_to_processed, source_average_cls_embedding, target_average_cls_embedding, temp_target_embeddings, original_to_processed_target
-    
-    # Calculate L2 distance of target with source
-    logger.info("Calculating L2 distance of target with source")
-    dist_matrix = torch.cdist(target_embeddings.cpu(), source_embeddings.cpu(), p=2)
-    dist_matrix = dist_matrix.to(accelerator.device)
-
-    mean_dists = torch.mean(dist_matrix, dim=1)
-    logger.info("Mean dists shape: {}".format(mean_dists.shape))
+        if args.task_type not in ["mt"]:
+            # Write predictions to output file
+            logger.info(f"Writing predictions for {language} to {pred_output_dir_AL}...")
+            with accelerator.main_process_first():
+                if pred_output_dir_AL is not None:
+                    os.makedirs(pred_output_dir_AL, exist_ok=True)
+                    pred_output_file = os.path.join(pred_output_dir_AL, "predictions_" + language + ".txt")
+                    with open(pred_output_file, "w") as f:
+                        for pred in eval_metric["predictions"]:
+                            f.write(str(pred) + "\n")
+    return eval_metric
 
 
-    # Get k nearest neighbours for each target example
-    logger.info("Getting k nearest neighbours for each target example")
-
-    knn_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
-    best_corr = 0
-    best_k = 0
-    corr_coeffs = {}
-    with accelerator.main_process_first():
-        for k in knn_list:
-            if k > dist_matrix.shape[1]:
-                break
-            logger.info("Getting k={} nearest neighbours".format(k))
-            _, k_nearest_neighbours = torch.topk(dist_matrix, k=k, dim=1, largest=False)
-            logger.info("k_nearest_neighbours shape: {}".format(k_nearest_neighbours.shape))
-            # Calculate average source loss of k nearest neighbours
-            logger.info("Calculating average source uncertainty of k nearest neighbours by finding margin values")
-            # We need to repeat the source logits to match the shape of k_nearest_neighbours
-            source_uncertainty_margin_repeated = source_uncertainty_margin.repeat(k_nearest_neighbours.shape[0], 1)
-            k_nearest_neighbours_uncertainty_margin = torch.gather(source_uncertainty_margin_repeated, 1, k_nearest_neighbours)
-            k_nearest_neighbours_uncertainty_margin = torch.mean(k_nearest_neighbours_uncertainty_margin, dim=1)
-            logger.info("k_nearest_neighbours_uncertainty_margin shape: {}".format(k_nearest_neighbours_uncertainty_margin.shape))
-
-            # Find correlation coefficient between target uncertainty margin and k nearest neighbours uncertainty margin
-            logger.info("Finding correlation coefficient between target uncertainty margin and k nearest neighbours uncertainty margin")
-            r, p = scipy.stats.pearsonr(target_uncertainty_margin.cpu().numpy(), k_nearest_neighbours_uncertainty_margin.cpu().numpy())
-            logger.info("Correlation coefficient = {}".format(r))
-            corr_coeffs[k] = r
-            if r > best_corr:
-                best_corr = r
-                best_k = k
-        logger.info("Best k = {}".format(best_k))
-        logger.info("Best correlation = {}".format(best_corr))
-
-    del dist_matrix, mean_dists, source_embeddings, target_embeddings, source_uncertainty_margin, target_uncertainty_margin
-
-    return best_k, corr_coeffs
-
-    

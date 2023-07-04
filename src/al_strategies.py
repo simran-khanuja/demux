@@ -9,17 +9,70 @@ import logging
 from torch.utils.data import DataLoader
 import numpy as np
 import gc
-import random
 import math
-from accelerate.utils import set_seed
 from torch.nn import CrossEntropyLoss
 
-from helper.data_utils import UDPOS_ID_MAP
+from helper.data_utils import UDPOS_ID_MAP, create_output_dirs
 
 logger = get_logger(__name__)
 
-
 logging.basicConfig(level=logging.INFO)
+
+def compute_uncertainty(args, task_type, logits, batch, model):
+    # Find uncertainty margin for token level tasks 
+    if task_type in ['token']:
+        # Calculate the cross entropy loss for each example and pass mask to ignore padding tokens
+        batch_log_softmax = torch.nn.functional.log_softmax(logits, dim=2)
+        mask = batch["labels"] != -100
+        batch_log_softmax = batch_log_softmax*mask.unsqueeze(2)
+        batch_log_softmax_sorted, _ = torch.sort(batch_log_softmax, dim=2, descending=True)
+        uncertainty_margin_sample = batch_log_softmax_sorted[:,:,0] - batch_log_softmax_sorted[:,:,1]
+        if args.token_task_margin == "min":
+            margin_mask = uncertainty_margin_sample!=0
+            masked_uncertainty_margin_sample = uncertainty_margin_sample.clone()
+            masked_uncertainty_margin_sample[~margin_mask] = float('inf')
+            uncertainty_margin_sample_min = torch.min(masked_uncertainty_margin_sample, dim=1)[0]
+            uncertainty = uncertainty_margin_sample_min
+        elif args.token_task_margin == "mean":
+            uncertainty_margin_sample_mean = torch.sum(uncertainty_margin_sample, dim=1) / mask.sum(dim=1)
+            uncertainty = uncertainty_margin_sample_mean
+        elif args.token_task_margin == "max":
+            uncertainty_margin_sample_max = torch.max(uncertainty_margin_sample, dim=1)[0]
+            uncertainty = uncertainty_margin_sample_max
+        elif args.token_task_margin == "mnlp":
+            uncertainty_margin_sample_mnlp = torch.sum(batch_log_softmax_sorted[:,:,0], dim=1) / torch.sum(mask, dim=1)
+            uncertainty = uncertainty_margin_sample_mnlp
+    
+    # Find uncertainty value for classification tasks by subtracting the log softmax of the top 2 logits; lower margin means higher uncertainty
+    elif task_type in ['sequence']:
+        batch_log_softmax = torch.nn.functional.log_softmax(logits, dim=1)
+        batch_log_softmax_sorted, _ = torch.sort(batch_log_softmax, dim=1, descending=True)
+        uncertainty = batch_log_softmax_sorted[:,0] - batch_log_softmax_sorted[:,1]
+    
+    # Find uncertainty value for QA tasks by adding start and end logits; lower the final value higher the uncertainty
+    elif task_type in ['qa']:
+        start_logits =  torch.nn.functional.log_softmax(logits[0], dim=1)
+        end_logits = torch.nn.functional.log_softmax(logits[1], dim=1)
+        if args.qa_uncertainty_method == "logits":
+            start_logits_max = torch.max(start_logits, dim=1)
+            end_logits_max = torch.max(end_logits, dim=1)
+            uncertainty = start_logits_max.values + end_logits_max.values
+        elif args.qa_uncertainty_method == "margin":
+            start_logits_sorted, _ = torch.sort(start_logits, dim=1, descending=True)
+            end_logits_sorted, _ = torch.sort(end_logits, dim=1, descending=True)
+            uncertainty = (start_logits_sorted[:,0] - start_logits_sorted[:,1]) + (end_logits_sorted[:,0] - end_logits_sorted[:,1])
+    
+    # Find uncertainty value of MT tasks by calculating the cross entropy loss for each example and pass mask to ignore padding tokens
+    elif task_type in ['mt']:
+        loss_fct = CrossEntropyLoss(reduction='none')
+        batch_size = logits.shape[0]
+        batch_loss_per_token = loss_fct(logits.view(-1, model.module.config.vocab_size), batch['labels'].view(-1)).view(batch_size, args.max_seq_length)
+        mask = batch_loss_per_token!=0
+        batch_loss = torch.sum(batch_loss_per_token, dim=1) / mask.sum(dim=1)
+        # Taking negative of loss to make it consistent with other tasks where higher uncertainty is associated with lower margins
+        uncertainty = -batch_loss
+    
+    return uncertainty
 
 def process_batch(inputs, task_type, device, model, dataset, embedding_method):
     encoding = inputs
@@ -60,27 +113,67 @@ def process_batch(inputs, task_type, device, model, dataset, embedding_method):
             denominator = torch.clamp(mask.sum(dim=1), min=1e-9)
             masked_hidden_states = outputs.encoder_last_hidden_state * mask
             embeddings = torch.sum(masked_hidden_states, dim=1) / denominator
-        logits = outputs.logits
+        logits = outputs.logits # shape: (batch_size, sequence_length, vocab_size)
     return embeddings, logits
 
+
+def process_embeddings_for_qa(raw_train_dataset, processed_train_dataset, raw_target_dataset, processed_target_dataset, train_embeddings, target_embeddings, train_uncertainty, accelerator):
+    train_indices_map = collections.defaultdict(list)
+    target_indices_map = collections.defaultdict(list)
+    for idx, example_id in enumerate(processed_train_dataset['example_id']):
+        train_indices_map[example_id].append(idx)
+        
+    for idx, example_id in enumerate(processed_target_dataset['example_id']):
+        target_indices_map[example_id].append(idx)
+        
+    train_uncertainty_map = {}
+    train_embedding_map = {}
+    target_embedding_map = {}
+    for ind in train_indices_map.keys():
+        uncertainty = torch.max(train_uncertainty[train_indices_map[ind]])
+        train_uncertainty_map[ind] = uncertainty
+        
+        # take the average of CLS Embeddings of all features within an example
+        train_embedding_map[ind] = torch.mean(train_embeddings[train_indices_map[ind]], 0).reshape(1, -1)
+        
+    for ind in target_indices_map.keys():
+        # take the average of CLS Embeddings of all features within an example
+        target_embedding_map[ind] = torch.mean(target_embeddings[target_indices_map[ind]], 0).reshape(1, -1)
+
+    train_uncertainty_list = []
+    train_embedding_list = []
+    target_embedding_list = []
+    for ind in raw_train_dataset['id']:
+        train_uncertainty_list.append(train_uncertainty_map[ind])
+        train_embedding_list.append(train_embedding_map[ind])
+
+    for ind in raw_target_dataset['id']:
+        target_embedding_list.append(target_embedding_map[ind])
+    
+    train_embeddings = torch.cat(train_embedding_list, 0)
+    target_embeddings = torch.cat(target_embedding_list, 0)
+    train_uncertainty = torch.tensor(train_uncertainty_list).to(accelerator.device)
+
+    train_embeddings = accelerator.gather(train_embeddings)
+    target_embeddings = accelerator.gather(target_embeddings)
+    train_uncertainty = accelerator.gather(train_uncertainty)
+
+    return train_embeddings, target_embeddings, train_uncertainty
+
+
 def get_embeddings(args, task_type, processed_dataset, split, model, accelerator, iteration, save_embeddings=False):
-    embeddings = torch.empty([0, model.config.hidden_size]).to(accelerator.device)
+    # Initialize empty lists instead of tensors, as each GPU will compute a part of the final tensor
+    embeddings_list = []
+    logits_list = []
+    uncertainty_list = []
 
-    # Initialize logits to empty tensor
-    if task_type in ["token"]:
-        logits = torch.empty([0, args.max_seq_length, model.config.num_labels]).to(accelerator.device)
-    elif task_type in ['qa']:
-        start_logits = torch.empty([0, args.max_seq_length]).to(accelerator.device)
-        end_logits = torch.empty([0, args.max_seq_length]).to(accelerator.device)
-    elif task_type in ['mt']:
-        logits = torch.empty([0, args.max_target_length, model.config.vocab_size]).to(accelerator.device)
-    elif task_type in ['sequence']:
-        logits = torch.empty([0, model.config.num_labels]).to(accelerator.device)
-
-    # Initialize uncertainty to empty tensor
-    uncertainty = torch.empty([0]).to(accelerator.device)
+    # Initialize start_logits and end_logits lists for 'qa' task type
+    if task_type in ['qa']:
+        start_logits_list = []
+        end_logits_list = []
     
     # Preserve the order of the dataset when batching and getting embeddings
+    # TODO: check if we need to do this and why
     if args.dataset_name in ['tydiqa']:
         for i in ['offset_mapping', 'example_id', 'language']:
             if i in processed_dataset.features:
@@ -98,236 +191,208 @@ def get_embeddings(args, task_type, processed_dataset, split, model, accelerator
     for step, batch in enumerate(dataloader):
         with torch.no_grad():
             batch_embeddings, batch_logits = process_batch(batch, task_type, accelerator.device, model, args.dataset_name, args.embedding_method)
-            embeddings = torch.cat((embeddings, batch_embeddings))
-            batch_size = batch_embeddings.shape[0]
-
+            # Add the computed batch embeddings and logits to the respective lists
+            embeddings_list.append(batch_embeddings)
             # Concatenate logits for each batch (except MT for which this is very large)
             if task_type in ['qa']:
-                start_logits = torch.cat((start_logits, batch_logits[0]))
-                end_logits = torch.cat((end_logits, batch_logits[1]))
+                start_logits_list.append(batch_logits[0])
+                end_logits_list.append(batch_logits[1])
             elif task_type in ['token', 'sequence']:
-                logits = torch.cat((logits, batch_logits))
-            
-            # Find uncertainty margin for token level tasks 
-            if task_type in ['token']:
-                # Calculate the cross entropy loss for each example and pass mask to ignore padding tokens
-                batch_log_softmax = torch.nn.functional.log_softmax(batch_logits, dim=2)
-                mask = batch["labels"] != -100
-                batch_log_softmax = batch_log_softmax*mask.unsqueeze(2)
-                batch_log_softmax_sorted, _ = torch.sort(batch_log_softmax, dim=2, descending=True)
-                uncertainty_margin_sample = batch_log_softmax_sorted[:,:,0] - batch_log_softmax_sorted[:,:,1]
-                if args.token_task_margin == "min":
-                    margin_mask = uncertainty_margin_sample!=0
-                    masked_uncertainty_margin_sample = uncertainty_margin_sample.clone()
-                    masked_uncertainty_margin_sample[~margin_mask] = float('inf')
-                    uncertainty_margin_sample_min = torch.min(masked_uncertainty_margin_sample, dim=1)[0]
-                    uncertainty = torch.cat((uncertainty, uncertainty_margin_sample_min))
-                elif args.token_task_margin == "mean":
-                    uncertainty_margin_sample_mean = torch.sum(uncertainty_margin_sample, dim=1) / mask.sum(dim=1)
-                    uncertainty = torch.cat((uncertainty, uncertainty_margin_sample_mean))
-                elif args.token_task_margin == "max":
-                    uncertainty_margin_sample_max = torch.max(uncertainty_margin_sample, dim=1)[0]
-                    uncertainty = torch.cat((uncertainty, uncertainty_margin_sample_max))
-                elif args.token_task_margin == "mnlp":
-                    uncertainty_margin_sample_mnlp = torch.sum(batch_log_softmax_sorted[:,:,0], dim=1) / torch.sum(mask, dim=1)
-                    uncertainty = torch.cat((uncertainty, uncertainty_margin_sample_mnlp))
-            
-            # Find uncertainty value for classification tasks by subtracting the log softmax of the top 2 logits; lower margin means higher uncertainty
-            elif task_type in ['sequence']:
-                batch_log_softmax = torch.nn.functional.log_softmax(batch_logits, dim=1)
-                batch_log_softmax_sorted, _ = torch.sort(batch_log_softmax, dim=1, descending=True)
-                uncertainty = torch.cat((uncertainty, batch_log_softmax_sorted[:,0] - batch_log_softmax_sorted[:,1]))
-            
-            # Find uncertainty value for QA tasks by adding start and end logits; lower the final value higher the uncertainty
-            elif task_type in ['qa']:
-                start_logits =  torch.nn.functional.log_softmax(batch_logits[0], dim=1)
-                end_logits = torch.nn.functional.log_softmax(batch_logits[1], dim=1)
-                if args.qa_uncertainty_method == "logits":
-                    start_logits_max = torch.max(start_logits, dim=1)
-                    end_logits_max = torch.max(end_logits, dim=1)
-                    batch_uncertainty = start_logits_max.values + end_logits_max.values
-                elif args.qa_uncertainty_method == "margin":
-                    start_logits_sorted, _ = torch.sort(start_logits, dim=1, descending=True)
-                    end_logits_sorted, _ = torch.sort(end_logits, dim=1, descending=True)
-                    batch_uncertainty = (start_logits_sorted[:,0] - start_logits_sorted[:,1]) + (end_logits_sorted[:,0] - end_logits_sorted[:,1])
-                uncertainty = torch.cat((uncertainty, batch_uncertainty))
-            
-            # Find uncertainty value of MT tasks by calculating the cross entropy loss for each example and pass mask to ignore padding tokens
-            elif task_type in ['mt']:
-                loss_fct = CrossEntropyLoss(reduction='none')
-                batch_loss_per_token = loss_fct(batch_logits.view(-1, model.config.vocab_size), batch['labels'].view(-1)).view(batch_size, args.max_seq_length)
-                mask = batch_loss_per_token!=0
-                batch_loss = torch.sum(batch_loss_per_token, dim=1) / mask.sum(dim=1)
-                # Taking negative of loss to make it consistent with other tasks where higher uncertainty is associated with lower margins
-                uncertainty = torch.cat((uncertainty, -batch_loss))
-                del batch_loss_per_token, mask, batch_loss
-            
+                logits_list.append(batch_logits)
+
+            # Compute the uncertainty based on the task type and add it to the uncertainty list
+            uncertainty = compute_uncertainty(args, task_type, batch_logits, batch, model)
+            uncertainty_list.append(uncertainty)
+
             # Log every 100 batches
-            if step%100==0:
-                logger.info('completed batch %s',step)
+            if step % 100 == 0:
+                logger.info('completed batch %s', step)
+                logger.info('Current batch size: %s', len(batch))
+                logger.info('Current embedding size:  %s', batch_embeddings.size())
     
+    # After the loop ends, concatenate the tensors in the lists and gather them from all GPUs
+    embeddings = torch.cat(embeddings_list, dim=0)
+    uncertainty = torch.cat(uncertainty_list, dim=0)
+    if task_type not in ['mt']:
+        logits = torch.cat(logits_list, dim=0) if task_type not in ['qa'] else [torch.cat(start_logits_list, dim=0), torch.cat(end_logits_list, dim=0)]
+    
+    embeddings = accelerator.gather(embeddings)
+    uncertainty = accelerator.gather(uncertainty)
+    if task_type not in ['mt']:
+        logits = accelerator.gather(logits)
+    else:
+        logits = None
+    
+    # Check if we are in a multi-GPU environment and if so, remove duplicates from the last batch
+    if accelerator.num_processes > 1:
+        dataset_size = len(processed_dataset)
+        if embeddings.shape[0] > dataset_size:
+            embeddings = embeddings[:dataset_size]
+            uncertainty = uncertainty[:dataset_size]
+            if logits is not None:
+                if task_type in ['qa']:
+                    logits[0] = logits[0][:dataset_size]
+                    logits[1] = logits[1][:dataset_size]
+                else:
+                    logits = logits[:dataset_size]
+
+
     # Save embeddings to disk
     if save_embeddings:
-        torch.save(embeddings, args.save_embeddings_path + '/iter_' + str(iteration) + '/' + str(split) + '_embeddings.pt')
-        logger.info("Saved embeddings for split: %s", split[:5])
+        with accelerator.main_process_first():
+            if not os.path.exists(args.save_embeddings_path + '/iter_' + str(iteration)):
+                os.makedirs(args.save_embeddings_path + '/iter_' + str(iteration))
+            torch.save(embeddings, args.save_embeddings_path + '/iter_' + str(iteration) + '/' + str(split) + '_embeddings.pt')
+            logger.info("Saved embeddings for split: %s", split[:5])
 
-    if task_type in ['qa']:
-        logits = [start_logits, end_logits]
-    
     return embeddings, logits, uncertainty
 
 
-def get_train_dataset(args, 
-                      task_type,
-                      raw_train_datasets,
-                      raw_target_datasets,
-                      processed_train_dataset,
-                      processed_target_dataset,
-                      previously_selected_indices,
-                      model,
-                      budget,
-                      strategy,
-                      iteration,
-                      accelerator,
-                      train_embeddings=None,
-                      train_logits=None,
-                      train_uncertainty=None,
-                      target_embeddings=None,
-                      target_logits=None,
-                      target_uncertainty=None,
-                      return_embeddings=False):
-    
-    raw_train_dataset = concatenate_datasets(list(raw_train_datasets.values()))
-    raw_target_dataset = concatenate_datasets(list(raw_target_datasets.values()))
-    
-    if args.seed is not None:
-        set_seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.backends.cudnn.deterministic = True
-
-    with accelerator.main_process_first():
-        if not os.path.exists(args.save_embeddings_path + '/iter_' + str(iteration)):
-            os.makedirs(args.save_embeddings_path + '/iter_' + str(iteration))
-
-    # Get train embeddings
-    if train_embeddings is None and args.strategy not in ['random', 'egalitarian'] and not args.strategy.startswith('gold'):
-        split = "train"
-        train_embeddings, train_logits, train_uncertainty = get_embeddings(args, task_type, processed_train_dataset, split, model, accelerator, iteration, save_embeddings=True)
-
-    # Get target embeddings
-    if target_embeddings is None and args.strategy not in ['random', 'egalitarian'] and not args.strategy.startswith('gold'):
-        split = "valid"
-        target_embeddings, target_logits, target_uncertainty = get_embeddings(args, task_type, processed_target_dataset, split, model, accelerator, iteration, save_embeddings=True)
-
-    ########################### TODO: move to function; better variable names; confirm whether true for all qa datasets ###########################
-    ###############################################################################################################################################
-    if args.dataset_name in ['tydiqa'] and args.strategy not in ['random', 'egalitarian'] and not args.strategy.startswith('gold'):
-        # train_embeddings, train_logits, train_uncertainty = get_embeddings(args, task_type, processed_train_dataset, "train", model, accelerator, iteration, save_embeddings=True)
-        # target_embeddings, target_logits, target_uncertainty = get_embeddings(args, task_type, processed_target_dataset, "valid", model, accelerator, iteration, save_embeddings=True)
-        original_to_processed = collections.defaultdict(list)
-        for idx, example_id in enumerate(processed_train_dataset['example_id']):
-            original_to_processed[example_id].append(idx)
-        
-        original_to_processed_target = collections.defaultdict(list)
-        for idx, example_id in enumerate(processed_target_dataset['example_id']):
-            original_to_processed_target[example_id].append(idx)
-        
-        original_uncertainity = {}
-        train_average_cls_embedding = {}
-        target_average_cls_embedding = {}
-        for ind in original_to_processed.keys():
-            uncertainity = train_uncertainty[original_to_processed[ind]]
-            uncertainity = torch.max(uncertainity)
-            original_uncertainity[ind]=uncertainity 
-
-            # take the average of CLS Embeddings of all features within an example
-            train_average_cls_embedding[ind] = torch.mean(train_embeddings[original_to_processed[ind]],0).reshape(1,-1)
-            
-        
-        for ind in original_to_processed_target.keys():
-            target_average_cls_embedding[ind] = torch.mean(target_embeddings[original_to_processed_target[ind]],0).reshape(1,-1)
-
-        temp_train_uncertainity = []
-        temp_train_embeddings = torch.empty([0, model.config.hidden_size]).to(accelerator.device)
-        temp_target_embeddings = torch.empty([0, model.config.hidden_size]).to(accelerator.device)
-        for i in raw_train_dataset['id']:
-            temp_train_uncertainity.append(original_uncertainity[i].item())
-            temp_train_embeddings = torch.cat((temp_train_embeddings,train_average_cls_embedding[i]))
-
-        for i in raw_target_dataset['id']:
-            temp_target_embeddings = torch.cat((temp_target_embeddings,target_average_cls_embedding[i]))
-    
-        train_uncertainty = torch.tensor(temp_train_uncertainity).to(accelerator.device)
-        train_embeddings = temp_train_embeddings
-        target_embeddings = temp_target_embeddings
-
-    if args.save_embeddings and args.strategy not in ['random', 'egalitarian'] and not args.strategy.startswith('gold'):
-        logger.info("Train embeddings shape: {}".format(train_embeddings.shape))
-        logger.info("Target embeddings shape: {}".format(target_embeddings.shape))
-    
-    ################################################## Code modification ends here #####################################################
-    #####################################################################################################################################
-
+def get_indices(args,
+                raw_train_dataset,
+                raw_train_datasets,
+                train_embeddings,
+                target_embeddings,
+                train_uncertainty,
+                budget,
+                strategy,
+                iteration,
+                previously_selected_indices,
+                accelerator):
     ################################# Code for all strategies begins here #################################
     ########################################### AVERAGE-DIST ##############################################
 
-    ################################# TODO: clean this up; ask if better way to deal with larger train embedding matrices #########################################
-    ##############################################################################################################################################################
+    ################################# TODO: ask if better way to deal with larger train embedding matrices #####################################
     if strategy=="average_dist":
         logger.info("Diversity mean strategy")
-        # Calculate the mean distance between each train example and all target examples in train batches of args.max_train_emb_len examples on GPU
-        if len(train_embeddings) > args.max_train_emb_len:
-            mean_budget_dists_batches = torch.empty([0]).to(accelerator.device)
-            topk_indices_batches = []
-            dist_matrix = torch.empty([0, len(target_embeddings)]).to(accelerator.device)
-            for i in range(0, len(train_embeddings), args.max_train_emb_len):
-                if i+args.max_train_emb_len > len(train_embeddings):
-                    dist_matrix_sample = torch.cdist(train_embeddings[i:], target_embeddings, p=2)
-                else:
-                    dist_matrix_sample = torch.cdist(train_embeddings[i:i+args.max_train_emb_len], target_embeddings, p=2)
-                dist_matrix_sample_mean = torch.mean(dist_matrix_sample, dim=1)
-                if budget > len(dist_matrix_sample_mean):
-                    mean_budget_dists_sample, topk_indices_sample = torch.topk(dist_matrix_sample_mean, len(dist_matrix_sample_mean), largest=False)
-                else:
-                    mean_budget_dists_sample, topk_indices_sample = torch.topk(dist_matrix_sample_mean, budget, largest=False)
-                mean_budget_dists_batches = torch.cat((mean_budget_dists_batches, mean_budget_dists_sample))
-                topk_indices_sample = topk_indices_sample.to(torch.int)
-                for j in topk_indices_sample.tolist():
-                    topk_indices_batches.append(i + j)
-                del dist_matrix_sample, dist_matrix_sample_mean, mean_budget_dists_sample, topk_indices_sample
-            # Get budget number of top k mean distances and indices
-            mean_budget_dists, topk_indices_mean_dist = torch.topk(mean_budget_dists_batches, budget, largest=False)
-            # Get the indices of the top k mean distances in the original train embeddings
-            topk_indices_mean_dist = topk_indices_mean_dist.to(torch.int).tolist()
-            topk_indices_batches = torch.tensor(topk_indices_batches).to(accelerator.device)
-            topk_indices = topk_indices_batches[topk_indices_mean_dist]
-            del mean_budget_dists_batches, topk_indices_batches, topk_indices_mean_dist
+
+        # Calculate the mean distance between each train example and all target examples in train batches of args.max_train_batch_size examples on GPU
+        def process_batch_avg_dist(train_batch, target_embeddings, budget, offset):
+            distance_matrix = torch.cdist(train_batch, target_embeddings, p=2)
+            mean_distances = torch.mean(distance_matrix, dim=1)
+            if budget > len(mean_distances):
+                top_mean_distances, top_indices = torch.topk(mean_distances, len(mean_distances), largest=False)
+            else:
+                top_mean_distances, top_indices = torch.topk(mean_distances, budget, largest=False)
+            return top_mean_distances, top_indices + offset  # Adjust indices to original train_embeddings tensor
+        
+        if len(train_embeddings) > args.max_train_batch_size:
+            # Split train embeddings into batches of size args.max_train_batch_size
+            train_data_batches = torch.chunk(train_embeddings, len(train_embeddings) // args.max_train_batch_size + 1)
+
+            batch_top_mean_distances = []
+            batch_top_indices = []
+
+            for i, train_batch in enumerate(train_data_batches):
+                offset = i * args.max_train_batch_size
+                mean_distances, indices = process_batch_avg_dist(train_batch.to(accelerator.device), target_embeddings, budget, offset)
+                batch_top_mean_distances.append(mean_distances)
+                batch_top_indices.append(indices)
+            
+            # Convert list of tensors to tensor
+            batch_mean_distances = torch.cat(batch_mean_distances)
+            batch_top_indices = torch.cat(batch_top_indices)
+
+            # Get top 'budget' mean distances and indices
+            top_mean_distances, local_top_indices = torch.topk(batch_mean_distances, budget, largest=False)
+            top_indices = batch_top_indices[local_top_indices.to(torch.int).tolist()]
+
         else:
             dist_matrix = torch.cdist(train_embeddings, target_embeddings, p=2).to(accelerator.device)
-            mean_budget_dists, topk_indices = torch.topk(torch.mean(dist_matrix, dim=1), min(budget,dist_matrix.shape[0]), largest=False)
+            top_mean_distances, top_indices = torch.topk(torch.mean(dist_matrix, dim=1), min(budget, dist_matrix.shape[0]), largest=False)
+        
+        logger.info(f"Min mean dist: {top_mean_distances[0]}")
+        logger.info(f"Max mean dist: {top_mean_distances[-1]}")
 
-        logger.info("Min mean dist: {}".format(mean_budget_dists[0]))
-        logger.info("Max mean dist: {}".format(mean_budget_dists[-1]))
-
-        # Cast top_k indices to list of ints
-        topk_indices = topk_indices.to(torch.int)
-
-        selected_train_embeddings = torch.empty([0, model.config.hidden_size]).to(accelerator.device)
         selected_indices = previously_selected_indices.copy()
-        for i, index in enumerate(topk_indices.tolist()):
+        top_indices_list = top_indices.tolist()
+
+        for index in top_indices_list:
             if len(selected_indices) == budget:
                 break
             if index not in selected_indices:
                 selected_indices.append(index)
-
-        del dist_matrix, mean_budget_dists, topk_indices
+        
     
-    ############################################## TODO ends here ##############################################
-    ############################################################################################################
+    ############################################## UNCERTAINTY ###################################################
+    if strategy.startswith("uncertainty"):
+        # Calculate uncertainty of train logits. Choose train samples with lowest average uncertainty.
+        logger.info("Uncertainty strategy")
+        # Select train samples with the lowest average margin / negative loss (for QA), to choose samples with highest uncertainty
+        _, top_indices = torch.topk(train_uncertainty, min(budget, train_uncertainty.shape[0]), largest=False)
+        selected_indices = previously_selected_indices.copy()
+        for i in top_indices.tolist():
+            if len(selected_indices) == budget:
+                break
+            if i not in selected_indices:
+                selected_indices.append(i)
+    
+    ############################################## KNN-UNCERTAINTY ################################################
 
+    ############################### TODO: ask if better way to deal with larger train embedding matrices ###########
+    if strategy.startswith("knn_uncertainty"):
+        # Calculate K nearest neighbors for each target and choose most uncertain train samples among them
+        logger.info("KNN Uncertainty Margin strategy")
+        
+        def process_batch_knn(target_batch, train_embeddings, max_nn):
+            distance_matrix_sample = torch.cdist(target_batch, train_embeddings, p=2)
+            sample_sorted_values, sample_sorted_indices = torch.sort(distance_matrix_sample, dim=1)
+            return sample_sorted_values[:, :max_nn], sample_sorted_indices[:, :max_nn]
+
+        max_nn = args.knn_max_neighbors  # maximum number of nearest neighbors to consider
+        batch_size = args.max_target_batch_size  # size of each target batch
+        target_len = len(target_embeddings) 
+
+        sorted_values, sorted_indices = [], []
+
+        target_batches = torch.chunk(target_embeddings, target_len // batch_size + 1)
+
+        # log which GPU is running this piece of code:
+        logger.info(f"Running on GPU {accelerator.device.index if accelerator else 'CPU'}")
+
+        for target_batch in target_batches:
+            batch_sorted_values, batch_sorted_indices = process_batch_knn(target_batch.to(accelerator.device), train_embeddings, max_nn)
+            sorted_values.append(batch_sorted_values)
+            sorted_indices.append(batch_sorted_indices)
+        
+        sorted_values = torch.cat(sorted_values)
+        sorted_indices = torch.cat(sorted_indices)
+        logger.info(f"dist_matrix shape: {sorted_values.shape}")
+
+        k_value = args.k_value if args.k_value is not None else 1
+        candidate_indices = previously_selected_indices.copy()
+
+        while True:
+            k_nn = sorted_indices[:, :k_value]
+            all_k_nn = torch.unique(k_nn.reshape(-1))
+            candidate_indices.extend(all_k_nn.tolist())
+            
+            if len(set(candidate_indices)) > budget:
+                logger.info(f"k_value: {k_value}")
+                logger.info(f"Length of candidate indices set: {len(candidate_indices)}")
+                break
+
+            if k_value > sorted_values.shape[1]:
+                logger.info("k_value exceeds number of train samples")
+                break
+            
+            k_value *= 2
+            candidate_indices = previously_selected_indices.copy()
+
+        logger.info("k_value: {}".format(k_value))
+
+        all_k_nn_uncertainty = train_uncertainty[all_k_nn]
+        _, sorted_indices_uncertainty = torch.sort(all_k_nn_uncertainty, descending=False)
+        train_indices_sorted = all_k_nn[sorted_indices_uncertainty]
+
+        selected_indices = previously_selected_indices.copy()
+        for i in train_indices_sorted.tolist():
+            if len(selected_indices) == budget:
+                break
+            if i not in selected_indices:
+                selected_indices.append(i)
+        logger.info("Selected indices shape: {}".format(len(selected_indices)))
+    
     ############################################## RANDOM and GOLD ##############################################
     if strategy=="random" or strategy.startswith("gold"):
         logger.info("Random strategy")
@@ -335,36 +400,30 @@ def get_train_dataset(args,
         if budget > len(raw_train_dataset):
             selected_indices = list(range(len(raw_train_dataset)))
         else:
-            if args.per_language_allocation_file is not None:
-                # read tsv file
-                iteration_number = None
+            if args.per_language_allocation_file is None:
+                while len(selected_indices) < budget:
+                        random_index = np.random.randint(0, len(raw_train_dataset))
+                        if random_index not in selected_indices:
+                            selected_indices.append(random_index)
+            else:
+                # read tsv file with per language allocation
                 with open(args.per_language_allocation_file, "r") as f:
                     lines = f.readlines()
                 for line in lines:
                     fields = line.strip().split("\t")
-                    if len(fields) == 2:
-                        dataset_config, allocation = fields
-                        dataset, config = dataset_config.split(":")
-                        if dataset == args.dataset_name and config == args.target_config_name:
-                            per_language_allocation = allocation.split(",")
-                            break
-                    elif len(fields) == 3:
-                        dataset_config, iteration_number, allocation = fields
-                        dataset, config = dataset_config.split(":")
-                        iteration_number = int(iteration_number.split("_")[1])
-                        if dataset == args.dataset_name and config == args.target_config_name and iteration_number == iteration:
-                            per_language_allocation = allocation.split(",")
-                            break
+                    dataset_config, iteration_number, allocation = fields
+                    dataset, config = dataset_config.split(":")
+                    iteration_number = int(iteration_number.split("_")[1])
+                    if dataset == args.dataset_name and config == args.target_config_name and iteration_number == iteration:
+                        per_language_allocation = allocation.split(",")
+                        break
 
                 per_language_allocation_each_round = {}
                 for item in per_language_allocation:
                     language, count = item.split(":")
                     if args.dataset_name == "udpos":
                         language = UDPOS_ID_MAP[language]
-                    if not iteration_number:
-                        per_language_allocation_each_round[language] = int(count) / args.total_rounds
-                    else:
-                        per_language_allocation_each_round[language] = int(count)
+                    per_language_allocation_each_round[language] = int(count)
                     logger.info("Language: {}, Count: {}".format(language, per_language_allocation_each_round[language]))
 
                 train_dataset_size = 0
@@ -376,21 +435,13 @@ def get_train_dataset(args,
                         continue
                     else:
                         per_language_budget = int(per_language_allocation_each_round[language])
-                        print(language, per_language_budget)
                         count = 0
-                        
                         while count < per_language_budget:
                             random_index = np.random.randint(train_dataset_size, train_dataset_size + len(train_dataset))
                             if random_index not in selected_indices:
                                     selected_indices.append(random_index)
                                     count += 1
                         train_dataset_size += len(train_dataset)
-
-            else:
-                while len(selected_indices) < budget:
-                    random_index = np.random.randint(0, len(raw_train_dataset))
-                    if random_index not in selected_indices:
-                        selected_indices.append(random_index)
     
     ############################################## EGALITARIAN ###################################################
     if strategy=="egalitarian":
@@ -422,107 +473,27 @@ def get_train_dataset(args,
                 
                 if len(selected_indices) >= len(raw_train_dataset):
                     break
+    ###################################################################################################################
+    
+    return selected_indices
 
-    ############################################## UNCERTAINTY ###################################################
-    if strategy.startswith("uncertainty"):
-        # Calculate uncertainty of train logits. Choose train samples with lowest average uncertainty.
-        logger.info("Uncertainty strategy")
-        # Select train samples with lowest average margin
-        margin = train_uncertainty
-        margin_topk, topk_indices = torch.topk(margin, min(budget, margin.shape[0]), largest=False)
-        logger.info("Min margin: {}".format(margin_topk[0]))
-        logger.info("Max margin: {}".format(margin_topk[-1]))
 
-        selected_indices = previously_selected_indices.copy()
-        for i in topk_indices.tolist():
-            if len(selected_indices) == budget:
-                break
-            if i not in selected_indices:
-                selected_indices.append(i)
-
-    ############################################## KNN-UNCERTAINTY ################################################
-
-    ################################# TODO: clean this up; ask if better way to deal with larger train embedding matrices #########################################
-    ##############################################################################################################################################################
-    if strategy.startswith("knn_uncertainty"):
-        logger.info("KNN Uncertainty Margin strategy")
-        # Calculate K nearest neighbors for each target based on minimum CLSD
-        if len(train_embeddings) > args.max_train_emb_len or len(target_embeddings) > args.max_target_emb_len:
-            logger.info("Train embeddings shape: {}".format(len(train_embeddings)))
-            logger.info("Target embeddings shape: {}".format(len(target_embeddings)))
-            logger.info("Max train emb len: {}".format(args.max_train_emb_len))
-            logger.info("Max target emb len: {}".format(args.max_target_emb_len))
-            # The two tensors below are of type long
-            dist_matrix_sorted_values = torch.empty([0, 512], dtype=torch.long).to(accelerator.device)
-            dist_matrix_sorted_indices = torch.empty([0, 512], dtype=torch.long).to(accelerator.device)
-            logger.info("Dist matrix sorted values shape: {}".format(dist_matrix_sorted_values.shape))
-            for i in range(0, len(target_embeddings), 100):
-                if i+100 > len(target_embeddings):
-                    dist_matrix_sample = torch.cdist(target_embeddings[i:], train_embeddings, p=2).to(accelerator.device)
-                else:
-                    dist_matrix_sample = torch.cdist(target_embeddings[i:i+100], train_embeddings, p=2).to(accelerator.device)
-                dist_matrix_sample_sorted_values, dist_matrix_sample_sorted_indices = torch.sort(dist_matrix_sample, dim=1)
-                dist_matrix_sorted_values = torch.cat((dist_matrix_sorted_values, dist_matrix_sample_sorted_values[:, :512]))
-                dist_matrix_sorted_indices = torch.cat((dist_matrix_sorted_indices, dist_matrix_sample_sorted_indices[:, :512]))
-                del dist_matrix_sample, dist_matrix_sample_sorted_values, dist_matrix_sample_sorted_indices
-                torch.cuda.empty_cache()
-        else:
-            dist_matrix = torch.cdist(target_embeddings, train_embeddings, p=2).to(accelerator.device)
-            dist_matrix_sorted_values, dist_matrix_sorted_indices = torch.sort(dist_matrix, dim=1)
-            del dist_matrix
-        
-        ############################################## TODO ends here ##############################################
-        ############################################################################################################
-        
-        logger.info("dist_matrix shape: {}".format(dist_matrix_sorted_values.shape))
-        if args.k_value is not None:
-            k_value = args.k_value
-        else:
-            k_value = 1
-        candidate_indices = previously_selected_indices.copy()
-        while True:
-            k_nearest_neighbours = dist_matrix_sorted_indices[:, :k_value]
-            all_k_nearest_neighbours = torch.unique(k_nearest_neighbours.reshape(-1))
-            candidate_indices.extend(all_k_nearest_neighbours.tolist())
-            candidate_indices_set = set(candidate_indices)
-            if len(candidate_indices_set) > budget:
-                logger.info("k_value: {}".format(k_value))
-                logger.info("Length of candidate indices set: {}".format(len(candidate_indices_set)))
-                break
-            elif k_value > dist_matrix_sorted_values.shape[1]:
-                logger.info("k_value exceeds number of train samples")
-                break
-            else:
-                del candidate_indices, candidate_indices_set, all_k_nearest_neighbours, k_nearest_neighbours
-                k_value *= 2
-                candidate_indices = previously_selected_indices.copy()
-        logger.info("k_value: {}".format(k_value))
-        all_k_nn_uncertainty_margin = train_uncertainty[all_k_nearest_neighbours]
-        all_k_nn_uncertainty_margin_sorted, all_k_nn_uncertainty_margin_sorted_indices = torch.sort(all_k_nn_uncertainty_margin, descending=False)
-        new_train_indices_sorted = all_k_nearest_neighbours[all_k_nn_uncertainty_margin_sorted_indices]
-
-        selected_indices = previously_selected_indices.copy()
-        for i in new_train_indices_sorted.tolist():
-            if len(selected_indices) == budget:
-                break
-            if i not in selected_indices:
-                selected_indices.append(i)
-        logger.info("Selected indices shape: {}".format(len(selected_indices)))
-
-        del dist_matrix_sorted_values, dist_matrix_sorted_indices, k_nearest_neighbours, all_k_nearest_neighbours, \
-        all_k_nn_uncertainty_margin, all_k_nn_uncertainty_margin_sorted, all_k_nn_uncertainty_margin_sorted_indices
-
-    ############################################## Code for strategies ends here ################################################
-    #############################################################################################################################
-
-    if strategy.startswith("knn") and k_value is not None:
-        save_dataset_path = args.save_dataset_path + '/iter_' + str(iteration) + '_start_' + str(args.k_value) + 'end_' + str(k_value) 
-    else:
-        save_dataset_path = args.save_dataset_path + '/iter_' + str(iteration)
-
-    with accelerator.main_process_first():
-        if not os.path.exists(save_dataset_path):
-            os.makedirs(save_dataset_path)
+def save_dataset(
+    args,
+    save_dataset_path,
+    save_embeddings_path, 
+    raw_train_dataset, 
+    selected_indices, 
+    train_embeddings, 
+    budget, 
+    iteration
+):
+    save_dataset_path = save_dataset_path + '/iter_' + str(iteration)
+    save_embeddings_path = save_embeddings_path + '/iter_' + str(iteration)
+    if not os.path.exists(save_dataset_path):
+        os.makedirs(save_dataset_path)
+    if not os.path.exists(save_embeddings_path):
+        os.makedirs(save_embeddings_path)
     
     # Save dataset and embeddings
     raw_train_dataset.select(selected_indices).to_csv(save_dataset_path + '/' + str(budget) + '.csv')
@@ -537,17 +508,78 @@ def get_train_dataset(args,
     language_distribution.to_csv(save_dataset_path + '/' + str(budget) + '_language_distribution.csv')
 
     # Save embeddings
-    if args.save_embeddings and args.strategy not in ['random', 'egalitarian'] and not args.strategy.startswith('gold'):
+    if args.save_embeddings and args.compute_embeddings:
         selected_train_embeddings = train_embeddings[selected_indices]
-        torch.save(selected_train_embeddings, args.save_embeddings_path + '/iter_' + str(iteration) + '/selected_train_' + str(budget) + '.pt')
+        torch.save(selected_train_embeddings, save_embeddings_path + '/selected_train_' + str(budget) + '.pt')
+    
+    return selected_train_dataset
 
-        if not return_embeddings:
-            del train_embeddings, target_embeddings
 
+def get_train_dataset(args, 
+                      task_type,
+                      raw_train_datasets,
+                      raw_target_datasets,
+                      processed_train_dataset,
+                      processed_target_dataset,
+                      previously_selected_indices,
+                      save_dataset_path,
+                      save_embeddings_path,
+                      model,
+                      budget,
+                      strategy,
+                      iteration,
+                      accelerator):
+    
+    raw_train_dataset = concatenate_datasets(list(raw_train_datasets.values()))
+    raw_target_dataset = concatenate_datasets(list(raw_target_datasets.values()))    
+
+    if args.compute_embeddings:
+        # Get train embeddings
+        train_embeddings, _, train_uncertainty = get_embeddings(args, task_type, processed_train_dataset, "train", model, accelerator, iteration, save_embeddings=True)
+        # Get target embeddings
+        target_embeddings, _, _ = get_embeddings(args, task_type, processed_target_dataset, "valid", model, accelerator, iteration, save_embeddings=True)
+
+        ########################### TODO: confirm whether true for all qa datasets ###########################
+        if args.dataset_name in ['tydiqa']:
+            with accelerator.main_process_first():
+                train_embeddings, target_embeddings, train_uncertainty = process_embeddings_for_qa(raw_train_dataset, processed_train_dataset, \
+                    raw_target_dataset, processed_target_dataset, train_embeddings, target_embeddings, train_uncertainty, accelerator)
+        ################################################ END TODO #############################################
+   
+        # Log size of train and target embeddings
+        logger.info("Train embeddings shape: %s", train_embeddings.shape)
+        logger.info("Target embeddings shape: %s", target_embeddings.shape)
+    
+    else:
+        train_embeddings = None
+        target_embeddings = None
+        train_uncertainty = None
+
+    # Check whether we need to run training for multiple budgets and one round
+    if not args.multiple_budgets_one_round:
+        with accelerator.main_process_first():
+            # Get the indices of the train examples to be selected
+            selected_indices = get_indices(args, raw_train_dataset, raw_train_datasets, train_embeddings, target_embeddings, train_uncertainty, budget, strategy, iteration, previously_selected_indices, accelerator)
+            # Save dataset, embeddings and language distribution
+            selected_train_dataset = save_dataset(args, save_dataset_path, save_embeddings_path, raw_train_dataset, selected_indices, train_embeddings, budget, iteration)
+
+    else:
+        if "," in args.budget:
+            budget_list = [int(b) for b in args.budget.split(",")]
+        else:
+            budget_list = [int(args.budget)]
+        for budget in budget_list:
+            # Create dirs for this budget
+            save_dataset_path, _, _, save_embeddings_path = create_output_dirs(args, budget, accelerator)
+
+            # Save dataset, embeddings and language distribution
+            with accelerator.main_process_first():
+                # Get the indices of the train examples to be selected
+                selected_indices = get_indices(args, raw_train_dataset, raw_train_datasets, train_embeddings, \
+                    target_embeddings, train_uncertainty, budget, strategy, iteration, previously_selected_indices, accelerator)
+                selected_train_dataset = save_dataset(args, save_dataset_path, save_embeddings_path, raw_train_dataset, selected_indices, train_embeddings, budget, iteration)
+            
     # Empty cache
     gc.collect()
     torch.cuda.empty_cache()
-    if return_embeddings:
-        return selected_train_dataset, selected_indices, train_embeddings, train_logits, train_uncertainty, target_embeddings, target_logits, target_uncertainty
-    else:
-        return selected_train_dataset, selected_indices, None, None, None, None, None, None
+    return selected_train_dataset, selected_indices
