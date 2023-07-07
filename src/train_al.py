@@ -861,14 +861,14 @@ def main():
                 if completed_steps % int(checkpointing_steps) == 0:
                     ckpt_dir = f"step_{completed_steps}.ckpt"
                     if output_dir_AL is not None:
-                        output_dir = os.path.join(output_dir_AL, ckpt_dir)
+                        ckpt_output_dir = os.path.join(output_dir_AL, ckpt_dir)
                     # Save model checkpoint
                     accelerator.wait_for_everyone()
                     unwrapped_model = accelerator.unwrap_model(model)
-                    unwrapped_model.save_pretrained(output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save)
+                    unwrapped_model.save_pretrained(ckpt_output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save)
                     if accelerator.is_main_process:
-                        tokenizer.save_pretrained(output_dir)
-                    logger.info(f"Saving checkpoint to {output_dir}")
+                        tokenizer.save_pretrained(ckpt_output_dir)
+                    logger.info(f"Saving checkpoint to {ckpt_output_dir}")
                     # Check for early stopping by keeping the max of validation accuracy
                     dev_test_accuracies = eval_dev_test(model, tokenizer, args.task_type, args.dataset_name, processed_validation_datasets, processed_test_datasets,
                         raw_validation_datasets, raw_test_datasets, metric, completed_steps, iteration, max_train_steps, args, data_collator, accelerator, label_names)
@@ -890,7 +890,7 @@ def main():
                         if args.max_to_keep > 0:
                             checkpoint_dirs = glob.glob(os.path.join(output_dir_AL, "step_*.ckpt"))
                             checkpoint_dirs.sort(key=os.path.getmtime)
-                            if len(checkpoint_dirs) > args.max_to_keep:
+                            if len(checkpoint_dirs) >= args.max_to_keep:
                                 shutil.rmtree(checkpoint_dirs[-1])
                                 logger.info(f"Deleted checkpoint {checkpoint_dirs[-1]}")
 
@@ -926,11 +926,11 @@ def main():
                 df = pd.DataFrame(dev_test_accuracies, index=[0])
                 df.to_csv(os.path.join(output_dir_AL, "all_results.csv"), index=False)
 
-                # Remove checkpointing directories
-                checkpoint_dirs = glob.glob(os.path.join(output_dir_AL, "step_*.ckpt"))
-                for ckpt_dir in checkpoint_dirs:
-                    shutil.rmtree(ckpt_dir)
-                    logger.info(f"Deleted checkpoint {ckpt_dir}")
+                # # Remove checkpointing directories
+                # checkpoint_dirs = glob.glob(os.path.join(output_dir_AL, "step_*.ckpt"))
+                # for ckpt_dir in checkpoint_dirs:
+                #     shutil.rmtree(ckpt_dir)
+                #     logger.info(f"Deleted checkpoint {ckpt_dir}")
     
         if args.do_predict:
             predict_test(raw_test_datasets, processed_test_datasets, model, tokenizer, \
@@ -998,7 +998,7 @@ def main():
                     logger.info("Deleting model output directories...")
                     with accelerator.main_process_first():
                         for i in range(1, args.total_rounds + 1):
-                            shutil.rmtree(os.path.join(args.output_dir, f"iter_{i}"))
+                            shutil.rmtree(os.path.join(output_dir, f"iter_{i}"))
                             logger.info(f"Deleted model output directory for iteration {i}")
         
             else:

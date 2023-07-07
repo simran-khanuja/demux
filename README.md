@@ -35,7 +35,7 @@ conda activate demux-env
 
 # Reproducing Paper Results
 ## Step 1: Fine-tune multilingual models on English data
-We currently support the following datasets (<span style="color:red">add links to datasets and models</span>): 
+We currently support the following datasets: 
 - Token-level:
   - `udpos`: Universal Dependencies v2.5 
   - `PAN-X` : WikiAnn
@@ -83,6 +83,8 @@ To create a sweep job for each config run the following command:
 bash scripts/train/wandb/create_config_jobs.sh
 ```
 This will create a sweep job for each config in `scripts/train/wandb/jobs`.
+
+We also support multi-GPU training, using HF `accelerate`. A sample script can be found here: `scripts/train/sample_multi-gpu.sh`
 
 
 ## Step 3: Collect and visualize results
