@@ -9,21 +9,6 @@ mkdir -p ${CONFIG_DIR}
 
 OUTPUT_BASE_PATH="./outputs"
 
-# Training arguments
-BUDGET="10000"
-SEED=42
-EPOCHS=10
-PER_DEVICE_TRAIN_BATCH_SIZE=64
-PER_DEVICE_EVAL_BATCH_SIZE=64
-INFERENCE_BATCH_SIZE=1024
-MAX_SEQ_LENGTH=128
-DO_TRAIN=true
-DO_PREDICT=true
-MAX_TO_KEEP=1
-TOTAL_ROUNDS=5
-PAD_TO_MAX_LENGTH=true
-GRAD_ACC_STEPS=1
-
 # loop over models, datasets, and configs
 models=( "xlm-roberta-large" "infoxlm-large" "rembert" )
 datasets=( "PAN-X" "udpos" "xnli" "tydiqa" ) 
@@ -34,8 +19,24 @@ for MODEL in "${models[@]}"; do
 
     echo "Creating configs for ${MODEL} on ${DATASET}"
 
+    # Training arguments
+    BUDGET="10000"
+    SEED="[2, 22, 42]"
+    EPOCHS=10
+    PER_DEVICE_TRAIN_BATCH_SIZE=64
+    PER_DEVICE_EVAL_BATCH_SIZE=64
+    INFERENCE_BATCH_SIZE=1024
+    MAX_SEQ_LENGTH=128
+    DO_TRAIN=true
+    DO_PREDICT=true
+    MAX_TO_KEEP=1
+    TOTAL_ROUNDS=5
+    PAD_TO_MAX_LENGTH=true
+    GRAD_ACC_STEPS=1
+    DELETE_MODEL_OUTPUT=true
+
     # EN FT Model Path
-    FT_MODEL_PATH="./outputs/models/${MODEL}_en-ft_${DATASET}"
+    FT_MODEL_PATH="${OUTPUT_BASE_PATH}/models/${MODEL}_en-ft_${DATASET}"
 
     if [ ${DATASET} = "PAN-X" ]; then
       # array of target languages
@@ -102,10 +103,8 @@ for MODEL in "${models[@]}"; do
         BUDGET="5000"
         LR=1e-5
         # EN FT Model Path
-        FT_MODEL_PATH="./outputs/models/${MODEL}_en-ft_squad_v2"
+        FT_MODEL_PATH="${OUTPUT_BASE_PATH}/models/${MODEL}_en-ft_squad_v2"
     fi
-
-    # model path
     
     # loop over configs
     for i in "${!configs[@]}"; do
@@ -141,7 +140,7 @@ parameters:
   save_embeddings_path:
     value: \"${OUTPUT_BASE_PATH}/embeddings\"
   seed:
-    value: ${SEED}
+    values: ${SEED}
   do_train:
     value: ${DO_TRAIN}
   do_predict:
@@ -170,6 +169,8 @@ parameters:
     value: ${TOTAL_ROUNDS}
   save_predictions:
     value: true
+  delete_model_output:
+    value: ${DELETE_MODEL_OUTPUT}
   budget:
     value: \"${BUDGET}\"
   strategy:

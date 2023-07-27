@@ -6,7 +6,7 @@ parameters:
   target_config_name:
     value: "target_lp-pool"
   num_train_epochs:
-    value: 3
+    value: 10
   learning_rate:
     value: 5e-6
   source_languages:
@@ -26,7 +26,7 @@ parameters:
   save_embeddings_path:
     value: "./outputs/embeddings"
   seed:
-    value: 42
+    values: [2, 22, 42]
   do_train:
     value: true
   do_predict:
@@ -34,15 +34,15 @@ parameters:
   pad_to_max_length:
     value: true
   per_device_train_batch_size:
-    value: 32
+    value: 64
   per_device_eval_batch_size:
-    value: 32
+    value: 64
   gradient_accumulation_steps:
     value: 1
   inference_batch_size:
-    value: 512
+    value: 1024
   max_seq_length:
-    value: 256
+    value: 128
   qa_uncertainty_method:
     value: "logits"
   report_to:
@@ -55,8 +55,10 @@ parameters:
     value: 5
   save_predictions:
     value: true
+  delete_model_output:
+    value: true
   budget:
-    value: "5000"
+    value: "10000"
   strategy:
     values: ["random", "egalitarian", "gold_ar_th_sw_ur_hi", "average_dist", "knn_uncertainty_k_1", "uncertainty"]
   embedding_model:
