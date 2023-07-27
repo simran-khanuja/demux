@@ -27,6 +27,12 @@ export HF_HOME=/scratch/${USER}/cache
 export WANDB_START_METHOD="thread"
 export WANDB_DISABLE_SERVICE=True
 
+# Check if model path was passed as an argument
+if [ ! -z ${MODEL_PATH} ]
+then
+    MODEL_NAME_OR_PATH=${MODEL_PATH}
+fi
+
 # Setting model path
 if [ ${MODEL} == "xlm-roberta-large" ]
 then
@@ -39,14 +45,8 @@ then
     MODEL_NAME_OR_PATH=microsoft/infoxlm-large
 fi
 
-# Check if model path was passed as an argument
-if [ ! -z ${MODEL_PATH} ]
-then
-    MODEL_NAME_OR_PATH=${MODEL_PATH}
-fi
-
 python /home/${USER}/transformers/examples/pytorch/question-answering/run_qa.py \
-  --model_name_or_path ${MODEL_PATH} \
+  --model_name_or_path ${MODEL_NAME_OR_PATH} \
   --dataset_name ${DATASET} \
   --version_2_with_negative \
   --do_train \

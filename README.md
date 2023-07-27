@@ -58,8 +58,12 @@ bash scripts/train/run_ft_en.sh xlm-roberta-large udpos
 
 One can also fine-tune the model on other languages if desired, by specifying the language code in the `run_ft_en.sh` script.
 
-Note, for TyDiQA we first fine-tune the model on SQuAD v2, given the small size of TyDiQA. Clone the HF `transformers` repo in your home directory. Then, run the following command:
+Note, for TyDiQA we first fine-tune the model on SQuAD v2, given the small size of TyDiQA. Clone the HF `transformers` repo in your home directory. To ensure that you're working with the same version of the codebase, you can checkout to this commit: 
+```
+git checkout dadc9fb4275f4b7c2984d16d6d9a7880ec76d872
+```
 
+You will also need to change the environment since the transformers version required to run this is different. The minimum transformers version required is `4.31.0.dev0`. The rest of the requirements can be found [here](https://github.com/huggingface/transformers/blob/main/examples/pytorch/question-answering/requirements.txt). Once the dependencies are installed, you can fine-tune a model as follows:
 ```
 bash scripts/train/run_ft_squad_v2.sh [MODEL]
 ```

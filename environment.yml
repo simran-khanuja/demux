@@ -1,4 +1,4 @@
-name: multilingual_ft
+name: demux-env
 channels:
   - defaults
   - conda-forge
