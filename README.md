@@ -43,6 +43,10 @@ We currently support the following datasets:
   - `xnli`: XNLI
 - Question Answering:
   - `tydiqa`: TyDiQA-GoldP
+- Machine Translation (skip this step for MT):
+  - `opus`: OPUS-100
+  - `nllb`: NLLB 
+  - `flores200`: Flores-200
 
 The models supported in the scripts are `xlm-roberta-large`, `infoxlm-large` and `rembert`. First, we fine-tune multilingual models on labelled data in English for the task. To do this, run the following command:
 

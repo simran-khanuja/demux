@@ -78,3 +78,13 @@ opus100:
 facebook/flores:
   metric: sacrebleu
   task_type: mt
+
+allenai/nllb:
+  metric: sacrebleu
+  task_type: mt
+
+custom-burmese-social:
+  metric: sacrebleu
+  task_type: mt
+  source_data_column: Burmese
+  target_data_column: Translated
