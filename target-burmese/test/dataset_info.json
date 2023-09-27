@@ -1,0 +1,53 @@
+{
+  "builder_name": "csv",
+  "citation": "",
+  "config_name": "default",
+  "dataset_size": 305212,
+  "description": "",
+  "download_checksums": {
+    "/home/skhanuja/demux/social-burmese.csv": {
+      "num_bytes": 303116,
+      "checksum": null
+    }
+  },
+  "download_size": 303116,
+  "features": {
+    "URL": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "Burmese": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "Translated": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "Google Translate": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "language": {
+      "dtype": "string",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 608328,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 305212,
+      "num_examples": 250,
+      "dataset_name": "csv"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}
