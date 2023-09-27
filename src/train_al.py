@@ -2,6 +2,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import traceback, sys
+
 import argparse
 import json
 import logging
@@ -128,7 +130,7 @@ def parse_args():
     parser.add_argument(
         "--decoder_target_language",
         type=str,
-        default="en_XX",
+        default="eng_Latn",
         help="Decoder target language for MT, if task is MT.",
     )
     parser.add_argument(
@@ -150,6 +152,12 @@ def parse_args():
         type=str,
         default=None,
         help="Pretrained config name or path if not the same as model_name",
+    )
+    parser.add_argument(
+        "--vocab_size",
+        type=int,
+        default=None,
+        help="Vocab size of the model, set to override pretrained model's vocab size.",
     )
     parser.add_argument(
         "--tokenizer_name",
@@ -482,7 +490,7 @@ def parse_args():
     parser.add_argument(
         "--max_target_batch_size",
         type=int,
-        default=100,
+        default=10,
         help=(
             "Max size of target embed matrix for GPU memory"
         ),
@@ -490,7 +498,7 @@ def parse_args():
     parser.add_argument(
         "--knn_max_neighbors",
         type=int,
-        default=512,
+        default=256,
         help=(
             "Max number of neigbors to consider in each batch of the KNN strategy"
         ),
@@ -604,6 +612,7 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         level=level,
     )
+    logging.getLogger("transformers").setLevel(logging.ERROR)
     logger.info(accelerator.state, main_process_only=False)
 
     if args.with_tracking:
@@ -627,11 +636,9 @@ def main():
         # If passed along, set the training seed now.
         if args.seed is not None:
             set_seed(args.seed)
-            torch.manual_seed(args.seed)
-            torch.cuda.manual_seed(args.seed)
-            random.seed(args.seed)
-            np.random.seed(args.seed)
-            torch.backends.cudnn.deterministic = True
+            if torch.cuda.is_available():
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
 
         # Read in dataset config yaml file
         with open(args.dataset_config_file, "r") as f:
@@ -664,6 +671,8 @@ def main():
                 args.config_name if args.config_name else args.model_name_or_path,	
                 cache_dir=args.cache_dir
             )
+        
+        args.vocab_size = config.vocab_size
 
         tokenizer = AutoTokenizer.from_pretrained(
             args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
@@ -863,12 +872,12 @@ def main():
                     if output_dir_AL is not None:
                         ckpt_output_dir = os.path.join(output_dir_AL, ckpt_dir)
                     # Save model checkpoint
-                    accelerator.wait_for_everyone()
-                    unwrapped_model = accelerator.unwrap_model(model)
-                    unwrapped_model.save_pretrained(ckpt_output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save)
-                    if accelerator.is_main_process:
-                        tokenizer.save_pretrained(ckpt_output_dir)
-                    logger.info(f"Saving checkpoint to {ckpt_output_dir}")
+                    # accelerator.wait_for_everyone()
+                    # unwrapped_model = accelerator.unwrap_model(model)
+                    # unwrapped_model.save_pretrained(ckpt_output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save)
+                    # if accelerator.is_main_process:
+                    #     tokenizer.save_pretrained(ckpt_output_dir)
+                    # logger.info(f"Saving checkpoint to {ckpt_output_dir}")
                     # Check for early stopping by keeping the max of validation accuracy
                     dev_test_accuracies = eval_dev_test(model, tokenizer, args.task_type, args.dataset_name, processed_validation_datasets, processed_test_datasets,
                         raw_validation_datasets, raw_test_datasets, metric, completed_steps, iteration, max_train_steps, args, data_collator, accelerator, label_names)
@@ -886,13 +895,13 @@ def main():
                                 accuracy_drop_count += 1
                                 logger.info(f"Validation accuracy dropped. Count: {accuracy_drop_count}*{checkpointing_steps}")
                     # Delete all checkpoints except last "max_to_keep" checkpoints based on timestamp. Each checkpoint is a directory.
-                    with accelerator.main_process_first():
-                        if args.max_to_keep > 0:
-                            checkpoint_dirs = glob.glob(os.path.join(output_dir_AL, "step_*.ckpt"))
-                            checkpoint_dirs.sort(key=os.path.getmtime)
-                            if len(checkpoint_dirs) >= args.max_to_keep:
-                                shutil.rmtree(checkpoint_dirs[-1])
-                                logger.info(f"Deleted checkpoint {checkpoint_dirs[-1]}")
+                    # with accelerator.main_process_first():
+                    #     if args.max_to_keep > 0:
+                    #         checkpoint_dirs = glob.glob(os.path.join(output_dir_AL, "step_*.ckpt"))
+                    #         checkpoint_dirs.sort(key=os.path.getmtime)
+                    #         if len(checkpoint_dirs) >= args.max_to_keep:
+                    #             shutil.rmtree(checkpoint_dirs[-1])
+                    #             logger.info(f"Deleted checkpoint {checkpoint_dirs[-1]}")
 
                 if completed_steps >= max_train_steps:
                     break
@@ -938,144 +947,149 @@ def main():
     
         accelerator.free_memory()
         return 
-    
-    if args.do_train:
-        # Get raw_train_dataset and processed_train_dataset from dictionaries of raw and processed datasets
-        raw_train_dataset = concatenate_datasets(list(raw_train_datasets.values()))
-        processed_train_dataset = concatenate_datasets(list(processed_train_datasets.values()))
-        processed_target_dataset = concatenate_datasets(list(processed_target_datasets.values()))
+    try: 
+        if args.do_train:
+            # Get raw_train_dataset and processed_train_dataset from dictionaries of raw and processed datasets
+            raw_train_dataset = concatenate_datasets(list(raw_train_datasets.values()))
+            processed_train_dataset = concatenate_datasets(list(processed_train_datasets.values()))
+            processed_target_dataset = concatenate_datasets(list(processed_target_datasets.values()))
+            
+            # Check whether we need to run training for multiple budgets and one round
+            if not args.multiple_budgets_one_round:
+                budget = int(args.budget)
+                logger.info(f"Starting training with budget {budget}...")
+                if args.do_active_learning is True:
+                    per_iteration_budget = budget // args.total_rounds
+                    num_iterations = 1
+                    output_dir_AL = None
+                    selected_indices = []
+                    while num_iterations <= args.total_rounds:
+                        logger.info(f"Starting active learning iteration {num_iterations}...")
+                        if num_iterations == 1:
+                            # Create different save paths for different budgets
+                            save_dataset_path, output_dir, pred_output_dir, save_embeddings_path = create_output_dirs(args, budget, accelerator)
+
+                        # Load model from model path
+                        model_path=output_dir_AL if num_iterations > 1 else args.model_name_or_path
+                        model = get_model(model_path, config, tokenizer, accelerator, args)
+
+                        train_dataset_AL, selected_indices = get_train_dataset(
+                                                                args,
+                                                                args.task_type,
+                                                                raw_train_datasets,
+                                                                raw_target_datasets,
+                                                                processed_train_dataset,
+                                                                processed_target_dataset,
+                                                                selected_indices,
+                                                                save_dataset_path=save_dataset_path,
+                                                                save_embeddings_path=save_embeddings_path,
+                                                                model=model,
+                                                                budget=num_iterations*per_iteration_budget,
+                                                                strategy=args.strategy,
+                                                                iteration=num_iterations,
+                                                                accelerator=accelerator)
+
+                        logger.info(f"Selected {len(selected_indices)} samples for training.")
+                        output_dir_AL = os.path.join(output_dir, f"iter_{num_iterations}")
+                        pred_output_dir_AL = os.path.join(pred_output_dir, f"iter_{num_iterations}")
+                        # Make sure output directories exist
+                        with accelerator.main_process_first():
+                            if not os.path.exists(output_dir_AL):
+                                os.makedirs(output_dir_AL, exist_ok=True)
+                            if not os.path.exists(pred_output_dir_AL):
+                                os.makedirs(pred_output_dir_AL, exist_ok=True)
+                        _ = train_loop(train_dataset_AL, output_dir_AL, pred_output_dir_AL, num_iterations)
+                        logger.info(f"Finished active learning iteration {num_iterations}.")
+                        num_iterations += 1
+                    
+                    # Iterate over all iterations and delete pytorch model.bin
+                    if args.delete_model_output:
+                        for i in range(1, args.total_rounds+1):
+                            model_path_iter = os.path.join(output_dir, f"iter_{i}")
+                            model_file = os.path.join(model_path_iter, "pytorch_model.bin")
+                            if os.path.exists(model_file):
+                                os.remove(model_file)
+                                logger.info(f"Deleted {model_file}")
+
+                else:
+                    if accelerator.is_main_process:
+                        if not os.path.exists(args.output_dir):
+                            os.makedirs(args.output_dir, exist_ok=True)
+                        if not os.path.exists(args.pred_output_dir):
+                            os.makedirs(args.pred_output_dir, exist_ok=True)
+                        if not os.path.exists(args.save_dataset_path):
+                            os.makedirs(args.save_dataset_path, exist_ok=True)
+                        logger.info(f"Saving model to {args.output_dir}")
+                        logger.info(f"Saving predictions to {args.pred_output_dir}")
+                    accelerator.wait_for_everyone()
+                    # Save raw train dataset to csv
+                    if accelerator.is_main_process:
+                        logger.info(f"Saving raw train dataset to {args.save_dataset_path}")
+                        logger.info(f"Raw train dataset length: {len(raw_train_dataset)}")
+                        raw_train_dataset.to_csv(os.path.join(args.save_dataset_path, "train.csv"), index=False)
+                    _ = train_loop(raw_train_dataset, args.output_dir, args.pred_output_dir, None)
         
-        # Check whether we need to run training for multiple budgets and one round
-        if not args.multiple_budgets_one_round:
-            budget = int(args.budget)
-            logger.info(f"Starting training with budget {budget}...")
-            if args.do_active_learning is True:
-                per_iteration_budget = budget // args.total_rounds
-                num_iterations = 1
-                output_dir_AL = None
-                selected_indices = []
-                while num_iterations <= args.total_rounds:
-                    logger.info(f"Starting active learning iteration {num_iterations}...")
-                    if num_iterations == 1:
-                        # Create different save paths for different budgets
-                        save_dataset_path, output_dir, pred_output_dir, save_embeddings_path = create_output_dirs(args, budget, accelerator)
-
-                    # Load model from model path
-                    model_path=output_dir_AL if num_iterations > 1 else args.model_name_or_path
-                    model = get_model(model_path, config, tokenizer, accelerator, args)
-
-                    train_dataset_AL, selected_indices = get_train_dataset(
-                                                            args,
-                                                            args.task_type,
-                                                            raw_train_datasets,
-                                                            raw_target_datasets,
-                                                            processed_train_dataset,
-                                                            processed_target_dataset,
-                                                            selected_indices,
-                                                            save_dataset_path=save_dataset_path,
-                                                            save_embeddings_path=save_embeddings_path,
-                                                            model=model,
-                                                            budget=num_iterations*per_iteration_budget,
-                                                            strategy=args.strategy,
-                                                            iteration=num_iterations,
-                                                            accelerator=accelerator)
-
-                    logger.info(f"Selected {len(selected_indices)} samples for training.")
-                    output_dir_AL = os.path.join(output_dir, f"iter_{num_iterations}")
-                    pred_output_dir_AL = os.path.join(pred_output_dir, f"iter_{num_iterations}")
+            else:
+                model = get_model(args.model_name_or_path, config, tokenizer, accelerator, args)
+                _, _ = get_train_dataset(
+                                    args,
+                                    args.task_type,
+                                    raw_train_datasets,
+                                    raw_target_datasets,
+                                    processed_train_dataset,
+                                    processed_target_dataset,
+                                    selected_indices=[],
+                                    save_dataset_path=None,
+                                    save_embeddings_path=None,
+                                    model=model,
+                                    budget=num_iterations*per_iteration_budget,
+                                    strategy=args.strategy,
+                                    iteration=1,
+                                    accelerator=accelerator)
+            
+                # Load the saved train datasets for each budget and train different models
+                if "," in args.budget:
+                    budget_list = [int(b) for b in args.budget.split(",")]
+                else:
+                    budget_list = [int(args.budget)]
+                for budget in budget_list:
+                    # Get paths for this budget
+                    save_dataset_path, output_dir, pred_output_dir, save_embeddings_path = create_output_dirs(args, budget, accelerator)
+                    # Load the saved train dataset
+                    train_dataset_AL = load_from_disk(os.path.join(save_dataset_path, "iter_1"))
+                    # Train the model
+                    logger.info(f"Selected {len(train_dataset_AL)} samples for training.")
+                    output_dir_AL = os.path.join(output_dir, f"iter_1")
+                    pred_output_dir_AL = os.path.join(pred_output_dir, f"iter_1")
                     # Make sure output directories exist
                     with accelerator.main_process_first():
                         if not os.path.exists(output_dir_AL):
                             os.makedirs(output_dir_AL)
                         if not os.path.exists(pred_output_dir_AL):
                             os.makedirs(pred_output_dir_AL)
-                    _ = train_loop(train_dataset_AL, output_dir_AL, pred_output_dir_AL, num_iterations)
-                    logger.info(f"Finished active learning iteration {num_iterations}.")
-                    num_iterations += 1
-                
-                # Delete model output directories if flag is set
-                if args.delete_model_output:
-                    logger.info("Deleting model output directories...")
-                    with accelerator.main_process_first():
-                        for i in range(1, args.total_rounds + 1):
-                            shutil.rmtree(os.path.join(output_dir, f"iter_{i}"))
-                            logger.info(f"Deleted model output directory for iteration {i}")
-        
-            else:
-                if accelerator.is_main_process:
-                    if not os.path.exists(args.output_dir):
-                        os.makedirs(args.output_dir, exist_ok=True)
-                    if not os.path.exists(args.pred_output_dir):
-                        os.makedirs(args.pred_output_dir, exist_ok=True)
-                    if not os.path.exists(args.save_dataset_path):
-                        os.makedirs(args.save_dataset_path, exist_ok=True)
-                    logger.info(f"Saving model to {args.output_dir}")
-                    logger.info(f"Saving predictions to {args.pred_output_dir}")
-                accelerator.wait_for_everyone()
-                # Save raw train dataset to csv
-                if accelerator.is_main_process:
-                    logger.info(f"Saving raw train dataset to {args.save_dataset_path}")
-                    logger.info(f"Raw train dataset length: {len(raw_train_dataset)}")
-                    raw_train_dataset.to_csv(os.path.join(args.save_dataset_path, "train.csv"), index=False)
-                _ = train_loop(raw_train_dataset, args.output_dir, args.pred_output_dir, None)
-        
-        else:
-            model = get_model(args.model_name_or_path, config, tokenizer, accelerator, args)
-            _, _ = get_train_dataset(
-                                args,
-                                args.task_type,
-                                raw_train_datasets,
-                                raw_target_datasets,
-                                processed_train_dataset,
-                                processed_target_dataset,
-                                selected_indices=[],
-                                save_dataset_path=None,
-                                save_embeddings_path=None,
-                                model=model,
-                                budget=num_iterations*per_iteration_budget,
-                                strategy=args.strategy,
-                                iteration=1,
-                                accelerator=accelerator)
-            
-            # Load the saved train datasets for each budget and train different models
-            if "," in args.budget:
-                budget_list = [int(b) for b in args.budget.split(",")]
-            else:
-                budget_list = [int(args.budget)]
-            for budget in budget_list:
-                # Get paths for this budget
-                save_dataset_path, output_dir, pred_output_dir, save_embeddings_path = create_output_dirs(args, budget, accelerator)
-                # Load the saved train dataset
-                train_dataset_AL = load_from_disk(os.path.join(save_dataset_path, "iter_1"))
-                # Train the model
-                logger.info(f"Selected {len(train_dataset_AL)} samples for training.")
-                output_dir_AL = os.path.join(output_dir, f"iter_1")
-                pred_output_dir_AL = os.path.join(pred_output_dir, f"iter_1")
-                # Make sure output directories exist
-                with accelerator.main_process_first():
-                    if not os.path.exists(output_dir_AL):
-                        os.makedirs(output_dir_AL)
-                    if not os.path.exists(pred_output_dir_AL):
-                        os.makedirs(pred_output_dir_AL)
-                _ = train_loop(train_dataset_AL, output_dir_AL, pred_output_dir_AL, 1)
-                logger.info(f"Finished active learning budget {budget}.")
+                    _ = train_loop(train_dataset_AL, output_dir_AL, pred_output_dir_AL, 1)
+                    logger.info(f"Finished active learning budget {budget}.")
 
+            if args.with_tracking:
+                accelerator.end_training()
+    
+        if not args.do_train and args.do_predict:
+            predict_test(raw_test_datasets, processed_test_datasets, model, tokenizer, \
+                args, accelerator, metric, label_names, data_collator, pred_output_dir_AL)
+    
+    except Exception as e:
+        # print the full error traceback
+        traceback.print_exc()
+
+        logger.info(f"Exception: {e}")
         if args.with_tracking:
             accelerator.end_training()
-    
-    if not args.do_train and args.do_predict:
-        predict_test(raw_test_datasets, processed_test_datasets, model, tokenizer, \
-            args, accelerator, metric, label_names, data_collator, pred_output_dir_AL)
+        # sys.exit(1)
         
 ##########################################################################################################################
 ##########################################################################################################################
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        raise  # re-raise the last exception
-        # Exit with 1 to indicate failure
-        # sys.exit(1)
+    main()
         
 

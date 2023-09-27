@@ -1,4 +1,4 @@
-from datasets import load_dataset, Dataset, load_dataset_builder
+from datasets import load_dataset, Dataset, load_dataset_builder, load_from_disk
 from typing import Dict, List, Tuple, Any
 from transformers import PreTrainedTokenizerFast
 from accelerate import Accelerator
@@ -8,6 +8,8 @@ import os
 from accelerate.logging import get_logger
 from functools import partial
 from sklearn.model_selection import train_test_split
+import pycountry
+
 
 logger = get_logger(__name__)
 
@@ -55,7 +57,7 @@ UDPOS_ID_MAP = {
     'ur': 'Urdu'
 }
 
-MBART_ID_MAP = {
+OPUS2MBART_ID_MAP = {
     "ar": "ar_AR",
     "cs": "cs_CZ",
     "de": "de_DE",
@@ -110,7 +112,7 @@ MBART_ID_MAP = {
     "sl": "sl_SI"
 }
 
-flores_id_map = {
+FLORES2MBART_ID_MAP = {
     "ind_Latn": "id_ID",
     "vie_Latn": "vi_VN",
     "mya_Mymr": "my_MM",
@@ -119,6 +121,15 @@ flores_id_map = {
     "tgl_Latn": "tl_XX",
     "eng_Latn": "en_XX",
 }
+
+
+def get_iso639_3_code(iso639_1_code):
+    try:
+        language = pycountry.languages.get(alpha_2=iso639_1_code)
+        return language.alpha_3
+    except AttributeError:
+        # Language not found or doesn't have a 3-letter code
+        return None
 
 
 def create_output_dirs(args, budget, accelerator):
@@ -187,7 +198,9 @@ def get_tydiqa_dataset(
 def recast_mt_features(
     examples: Dict[str, Any],
     dataset_name: str,
-    language_pair: str
+    language_pair: str,
+    source_data_column: str = 'source',
+    target_data_column: str = 'target'
 ) -> Dict[str, List[str]]:
     """
     Recast feature names for MT.
@@ -224,6 +237,29 @@ def recast_mt_features(
             sources.append(src)
             targets.append(tgt)
     
+    elif dataset_name == 'allenai/nllb':
+        source_language, target_language = language_pair.split('-')
+        # If source_language is eng*, then we need to swap the source and target languages.
+        if source_language.startswith('eng'):
+            source_language, target_language = target_language, source_language
+        for example in examples['translation']:
+            sources.append(example[source_language])
+            targets.append(example[target_language])
+    
+    elif dataset_name.startswith('custom'):
+        source_language, target_language = language_pair.split('-')
+        # If source_language is eng*, then we need to swap the source and target languages.
+        if source_language.startswith('eng'):
+            source_language, target_language = target_language, source_language
+        # Check if source and target data column names are specified and if not raise an error.
+        if not source_data_column or not target_data_column:
+            raise ValueError("Source and target data column names must be specified.")
+        for src, tgt in zip(examples[source_data_column], examples[target_data_column]):
+            sources.append(src)
+            targets.append(tgt)
+    else:
+        raise ValueError("Invalid dataset name.")
+
     # Update the 'translation' feature.
     examples['translation'] = [{'source': s, 'target': t} for s, t in zip(sources, targets)]
 
@@ -231,7 +267,8 @@ def recast_mt_features(
 
 # Get MT config names
 def get_mt_config_names(
-    dataset_name: str
+    dataset_name: str,
+    model_name_or_path: str
 ) -> List[str]:
     """
     Get MT config names.
@@ -241,20 +278,74 @@ def get_mt_config_names(
         builder = load_dataset_builder('opus100', 'af-en')
         # Get a list of all configuration names
         config_names = list(builder.builder_configs.keys())
-        mbart_languages = list(MBART_ID_MAP.keys())
-        mbart_supported_languages = []
-        # Check if the language is supported by mbart
-        for config in config_names:
-            src, tgt  = config.split("-")
-            if src in mbart_languages and tgt in mbart_languages:
-                mbart_supported_languages.append(config)               
-        config_names = mbart_supported_languages
+        if 'mbart' in model_name_or_path:
+            mbart_languages = list(OPUS2MBART_ID_MAP.keys())
+            mbart_supported_languages = []
+            # Check if the language is supported by mbart
+            for config in config_names:
+                src, tgt  = config.split("-")
+                if src in mbart_languages and tgt in mbart_languages:
+                    mbart_supported_languages.append(config)               
+            config_names = mbart_supported_languages
     elif dataset_name == 'facebook/flores':
         builder = load_dataset_builder('facebook/flores', 'eng_Latn-ukr_Cyrl')
         # Get a list of all configuration names
         config_names = list(builder.builder_configs.keys())
 
     return config_names
+
+# Get MT Tokenizer languages
+def get_mt_tokenizer_languages(
+    language: str,
+    dataset_name: str,
+    model_name_or_path: str,
+    tokenizer: PreTrainedTokenizerFast,
+) -> List[str]:
+    src = language.split("-")[0]
+    tgt = language.split("-")[1]
+    if dataset_name == "opus100":
+        # If src is "en", swap src and tgt
+        if src == "en":
+            src, tgt = tgt, src
+        if 'mbart' in model_name_or_path:
+            tokenizer.src_lang = OPUS2MBART_ID_MAP[src]
+            tokenizer.tgt_lang = OPUS2MBART_ID_MAP[tgt]
+        elif 'nllb' in model_name_or_path:
+            src_3_letter_code=get_iso639_3_code(src)
+            tgt_3_letter_code=get_iso639_3_code(tgt)
+            languages = tokenizer.additional_special_tokens
+            # get the src and tgt language from the 3 letter codes in the list above
+            src_list = [l for l in languages if l.split('_')[0] == src_3_letter_code]
+            if len(src_list) > 0:
+                src = src_list[0]
+            else:
+                logger.info(f"src language {src} not found in tokenizer additional_special_tokens")
+                return None
+            tgt = [l for l in languages if l.split('_')[0] == tgt_3_letter_code][0]
+            tokenizer.src_lang = src
+            tokenizer.tgt_lang = tgt
+    elif dataset_name == "facebook/flores" or dataset_name == "allenai/nllb":
+        # If src is "eng", swap src and tgt
+        if src.startswith("eng"):
+            src, tgt = tgt, src
+        if 'mbart' in model_name_or_path:
+            tokenizer.src_lang = FLORES2MBART_ID_MAP[src]
+            tokenizer.tgt_lang = FLORES2MBART_ID_MAP[tgt]
+        elif 'nllb' in model_name_or_path:
+            tokenizer.src_lang = src
+            tokenizer.tgt_lang = tgt
+    
+    else:
+        if src.startswith("eng") or src == "en":
+            src, tgt = tgt, src
+        if 'mbart' in model_name_or_path:
+            tokenizer.src_lang = FLORES2MBART_ID_MAP[src]
+            tokenizer.tgt_lang = FLORES2MBART_ID_MAP[tgt]
+        elif 'nllb' in model_name_or_path:
+            tokenizer.src_lang = src
+            tokenizer.tgt_lang = tgt
+    
+    return tokenizer
 
 # Load datasets
 def load_train_datasets(
@@ -285,8 +376,8 @@ def load_train_datasets(
     # if yes the source dataset path should have train and validation datasets stored in arrow format
     with accelerator.main_process_first():
         if args.source_dataset_path is not None:
-            raw_train_dataset = Dataset.from_file(args.source_dataset_path + "/train.arrow")
-            raw_validation_dataset = Dataset.from_file(args.source_dataset_path + "/validation.arrow")
+            raw_train_dataset = load_from_disk(args.target_dataset_path)["train"]
+            raw_validation_dataset = load_from_disk(args.target_dataset_path)["validation"]
             # Check if the dataset has a language column
             if "language" not in raw_train_dataset.column_names:
                 raw_train_dataset = raw_train_dataset.map(partial(add_language, language="unknown"), batched=True)
@@ -296,9 +387,17 @@ def load_train_datasets(
                 raw_train_datasets[language] = raw_train_dataset.filter(lambda x: x["language"] == language)
             for language in list(set(raw_validation_dataset["language"])):
                 raw_validation_datasets[language] = raw_validation_dataset.filter(lambda x: x["language"] == language)
+            # Check if MT and if yes, recast the features
+            if args.task_type == 'mt':
+                for language in raw_train_datasets:
+                    raw_train_dataset[language] = raw_train_dataset[language].map(partial(recast_mt_features, \
+                        dataset_name=args.dataset_name, language_pair=source_language), batched=True)
+                for language in raw_validation_datasets:
+                    raw_validation_datasets[language] = raw_validation_datasets[language].map(partial(recast_mt_features, \
+                        dataset_name=args.dataset_name, language_pair=source_language), batched=True)
         else:
             if args.task_type in ['mt'] and args.dataset_name in ['opus100'] and args.get_all_en_configs:
-                all_config_names = get_mt_config_names(args.dataset_name)
+                all_config_names = get_mt_config_names(args.dataset_name, args.model_name_or_path)
                 source_languages = [config_name for config_name in all_config_names if 'en' in config_name]
                 logger.info(f"Using all en configs: {source_languages}")
             else:
@@ -320,14 +419,14 @@ def load_train_datasets(
                     try:
                         validation_dataset = load_dataset(args.dataset_name, source_language, split="validation", cache_dir=args.cache_dir)
                     except Exception as e:
-                        print("Failed to load validation dataset, splitting train into 80/20 train/val", e)
-                        train_dataset, validation_dataset = train_test_split(train_dataset, test_size=0.2)
-                        train_dataset = Dataset.from_dict(train_dataset)
-                        validation_dataset = Dataset.from_dict(validation_dataset)
+                        print("Failed to load validation dataset, splitting train into 90/10 train/val", e)
+                        # Put 1000 samples of train dataset into validation, dont create a new split or dataser
+                        validation_dataset = train_dataset.select(range(1000))
 
                 # Deduplicate train dataset: Token classification datasets (udpos and PAN-X) have duplicate examples
                 if args.dataset_name in ["udpos", "PAN-X"]:
-                    deduplicated_train_dataset = deduplicate_dataset(train_dataset, check_column="tokens")
+                    # deduplicated_train_dataset = deduplicate_dataset(train_dataset, check_column="tokens")
+                    deduplicated_train_dataset = train_dataset
                 else:
                     deduplicated_train_dataset = train_dataset
             
@@ -374,14 +473,34 @@ def load_train_datasets(
                     # If src is "en", swap src and tgt
                     if src == "en":
                         src, tgt = tgt, src
-                    tokenizer.src_lang = MBART_ID_MAP[src]
-                    tokenizer.tgt_lang = MBART_ID_MAP[tgt]
-                elif args.dataset_name == "facebook/flores":
+                    if 'mbart' in args.model_name_or_path:
+                        tokenizer.src_lang = OPUS2MBART_ID_MAP[src]
+                        tokenizer.tgt_lang = OPUS2MBART_ID_MAP[tgt]
+                    elif 'nllb' in args.model_name_or_path:
+                        src_3_letter_code=get_iso639_3_code(src)
+                        tgt_3_letter_code=get_iso639_3_code(tgt)
+                        languages = tokenizer.additional_special_tokens
+                        # get the src and tgt language from the 3 letter codes in the list above
+                        src_list = [l for l in languages if l.split('_')[0] == src_3_letter_code]
+                        if len(src_list) > 0:
+                            src = src_list[0]
+                        else:
+                            logger.info(f"src language {src} not found in tokenizer additional_special_tokens")
+                            # remove from raw_train_datasets and continue
+                            continue 
+                        tgt = [l for l in languages if l.split('_')[0] == tgt_3_letter_code][0]
+                        tokenizer.src_lang = src
+                        tokenizer.tgt_lang = tgt
+                elif args.dataset_name == "facebook/flores" or args.dataset_name == "allenai/nllb":
                     # If src is "eng", swap src and tgt
                     if src.startswith("eng"):
                         src, tgt = tgt, src
-                    tokenizer.src_lang = flores_id_map[src]
-                    tokenizer.tgt_lang = flores_id_map[tgt]
+                    if 'mbart' in args.model_name_or_path:
+                        tokenizer.src_lang = FLORES2MBART_ID_MAP[src]
+                        tokenizer.tgt_lang = FLORES2MBART_ID_MAP[tgt]
+                    elif 'nllb' in args.model_name_or_path:
+                        tokenizer.src_lang = src
+                        tokenizer.tgt_lang = tgt
             processed_train_datasets[language] = raw_train_dataset.map(
                 partial(preprocess_datasets,
                     args=args,
@@ -398,21 +517,10 @@ def load_train_datasets(
         
         for language, raw_validation_dataset in raw_validation_datasets.items():
             if args.task_type in ["mt"]:
-                if args.dataset_name == "opus100":
-                    src = language.split("-")[0]
-                    tgt = language.split("-")[1]
-                    if args.dataset_name == "opus100":
-                        # If src is "en", swap src and tgt
-                        if src == "en":
-                            src, tgt = tgt, src
-                        tokenizer.src_lang = MBART_ID_MAP[src]
-                        tokenizer.tgt_lang = MBART_ID_MAP[tgt]
-                    elif args.dataset_name == "facebook/flores":
-                        # If src is "eng", swap src and tgt
-                        if src.startswith("eng"):
-                            src, tgt = tgt, src
-                        tokenizer.src_lang = flores_id_map[src]
-                        tokenizer.tgt_lang = flores_id_map[tgt] 
+                tokenizer = get_mt_tokenizer_languages(language, args.dataset_name, \
+                    args.model_name_or_path, tokenizer)
+                if not tokenizer:
+                    continue    
             processed_validation_datasets[language] = raw_validation_dataset.map(
                 partial(preprocess_datasets,
                     args=args,
@@ -432,7 +540,7 @@ def load_train_datasets(
         raw_target_datasets = {}
         processed_target_datasets = {}
         if args.target_dataset_path is not None:
-            raw_target_dataset = Dataset.from_file(args.target_dataset_path + "/target.arrow")
+            raw_target_dataset = load_from_disk(args.target_dataset_path)["target"]
             # Check if the dataset has a language column
             if "language" not in raw_target_dataset.column_names:
                 raw_target_dataset = raw_target_dataset.map(partial(add_language, language="unknown"), batched=True)
@@ -475,7 +583,8 @@ def load_train_datasets(
 
                 # Deduplicate target dataset: Token classification datasets (udpos and PAN-X) have duplicate examples
                 if target_dataset_name in ["udpos", "PAN-X"]:
-                    deduplicated_target_dataset = deduplicate_dataset(raw_target_dataset, check_column="tokens")
+                    # deduplicated_target_dataset = deduplicate_dataset(raw_target_dataset, check_column="tokens")
+                    deduplicated_target_dataset = raw_target_dataset
                 else:
                     deduplicated_target_dataset = raw_target_dataset
             
@@ -497,20 +606,10 @@ def load_train_datasets(
         # Preprocess target datasets
         for language, raw_target_dataset in raw_target_datasets.items():
             if args.task_type in ["mt"]:
-                src = language.split("-")[0]
-                tgt = language.split("-")[1]
-                if target_dataset_name == "opus100":
-                    # If src is "en", swap src and tgt
-                    if src == "en":
-                        src, tgt = tgt, src
-                    tokenizer.src_lang = MBART_ID_MAP[src]
-                    tokenizer.tgt_lang = MBART_ID_MAP[tgt]
-                elif target_dataset_name == "facebook/flores":
-                    # If src is "eng", swap src and tgt
-                    if src.startswith("eng"):
-                        src, tgt = tgt, src
-                    tokenizer.src_lang = flores_id_map[src]
-                    tokenizer.tgt_lang = flores_id_map[tgt]   
+                tokenizer = get_mt_tokenizer_languages(language, args.target_dataset_name, \
+                    args.model_name_or_path, tokenizer)
+                if not tokenizer:
+                    continue
             processed_target_datasets[language] = raw_target_dataset.map(
                 partial(preprocess_datasets,
                     args=args,
@@ -550,7 +649,7 @@ def load_test_datasets(
         raw_test_datasets = {}
         processed_test_datasets = {}
         if args.target_dataset_path is not None:
-            raw_test_dataset = Dataset.from_file(args.target_dataset_path + "/test.arrow")
+            raw_test_dataset = load_from_disk(args.target_dataset_path)["test"]
             # Check if the dataset has a language column
             if "language" not in raw_test_dataset.column_names:
                 raw_test_dataset = raw_test_dataset.map(partial(add_language, language="unknown"), batched=True)
@@ -606,20 +705,11 @@ def load_test_datasets(
 
         for language, raw_test_dataset in raw_test_datasets.items():
             if args.task_type in ["mt"]:
-                src = language.split("-")[0]
-                tgt = language.split("-")[1]
-                if target_dataset_name == "opus100":
-                    # If src is "en", swap src and tgt
-                    if src == "en":
-                        src, tgt = tgt, src
-                    tokenizer.src_lang = MBART_ID_MAP[src]
-                    tokenizer.tgt_lang = MBART_ID_MAP[tgt]
-                elif target_dataset_name == "facebook/flores":
-                    # If src is "eng", swap src and tgt
-                    if src.startswith("eng"):
-                        src, tgt = tgt, src
-                    tokenizer.src_lang = flores_id_map[src]
-                    tokenizer.tgt_lang = flores_id_map[tgt]
+                tokenizer = get_mt_tokenizer_languages(language, args.target_dataset_name, \
+                    args.model_name_or_path, tokenizer)
+                if not tokenizer:
+                    continue
+                
             processed_test_datasets[language] = raw_test_dataset.map(
                 partial(preprocess_datasets,
                     args=args,

@@ -45,7 +45,7 @@ def get_model(model_path, config, tokenizer, accelerator, args):
                 cache_dir=args.cache_dir,
             )
             # Set model.config.decoder_start_token_id to decoder_target_language
-            model.config.decoder_start_token_id = tokenizer.lang_code_to_id[args.decoder_target_language]
+            # model.config.decoder_start_token_id = tokenizer.lang_code_to_id[args.decoder_target_language]
     
     accelerator.wait_for_everyone()
     return model
@@ -197,6 +197,7 @@ def eval_model_mt(args, tokenizer, model, eval_dataloader, metric, accelerator):
             generated_tokens = accelerator.unwrap_model(model).generate(
                 batch["input_ids"],
                 attention_mask=batch["attention_mask"],
+                forced_bos_token_id=tokenizer.lang_code_to_id["eng_Latn"],
                 **gen_kwargs,
             )
 
@@ -229,6 +230,7 @@ def eval_model_mt(args, tokenizer, model, eval_dataloader, metric, accelerator):
 
             metric.add_batch(predictions=decoded_preds, references=decoded_labels)
     eval_metric = metric.compute()
+    eval_metric["predictions"] = decoded_preds
     logger.info({"bleu": eval_metric["score"]})
     return eval_metric
 
@@ -260,7 +262,7 @@ def eval_dev_test(
     else:
         iteration_suffix = ""
     if completed_steps==0 or completed_steps==total_steps:
-        for language in processed_validation_datasets:
+        for language in list(processed_validation_datasets.keys())[:5]:
             processed_validation_dataset = processed_validation_datasets[language]
             if task_type in ["qa"] and "example_id" in processed_validation_dataset.features:
                 processed_validation_dataset= processed_validation_dataset.remove_columns(["example_id", "offset_mapping"])
@@ -349,16 +351,15 @@ def predict_test(
             metric_to_track = "score"
         logger.info(f"test {metric_to_track} for {language}: {eval_metric[metric_to_track]}")
     
-        if args.task_type not in ["mt"]:
-            # Write predictions to output file
-            logger.info(f"Writing predictions for {language} to {pred_output_dir_AL}...")
-            with accelerator.main_process_first():
-                if pred_output_dir_AL is not None:
-                    os.makedirs(pred_output_dir_AL, exist_ok=True)
-                    pred_output_file = os.path.join(pred_output_dir_AL, "predictions_" + language + ".txt")
-                    with open(pred_output_file, "w") as f:
-                        for pred in eval_metric["predictions"]:
-                            f.write(str(pred) + "\n")
+        # Write predictions to output file
+        logger.info(f"Writing predictions for {language} to {pred_output_dir_AL}...")
+        with accelerator.main_process_first():
+            if pred_output_dir_AL is not None:
+                os.makedirs(pred_output_dir_AL, exist_ok=True)
+                pred_output_file = os.path.join(pred_output_dir_AL, "predictions_" + language + ".txt")
+                with open(pred_output_file, "w") as f:
+                    for pred in eval_metric["predictions"]:
+                        f.write(str(pred) + "\n")
     return eval_metric
 
 
