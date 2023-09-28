@@ -10,6 +10,6 @@ def csv_to_arrow(csv_path, arrow_directory):
 
 
 if __name__ == "__main__":
-    csv_path = "/home/skhanuja/demux/social-burmese.csv"
-    arrow_file_path = "/home/skhanuja/demux/target-burmese"
-    csv_to_arrow(csv_path, arrow_file_path)
+    csv_path = "social-burmese.csv"
+    arrow_directory = "target-burmese"
+    csv_to_arrow(csv_path, arrow_directory)

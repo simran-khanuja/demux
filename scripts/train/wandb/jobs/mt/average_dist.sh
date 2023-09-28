@@ -22,15 +22,23 @@ mkdir -p /scratch/${USER}/cache/data
 
 export HF_HOME=/scratch/${USER}/cache
 export WANDB_START_METHOD="thread"
-export WANDB_DISABLE_SERVICE=True
+export WANDB_DISABLE_SERVICE=true
+export WANDB_MODE=offline
+
+echo ${WANDB_DISABLE_SERVICE}
+echo ${WANDB_MODE}
 
 python src/train_al.py \
 --do_active_learning true \
 --source_languages eng_Latn-mya_Mymr \
 --target_languages mya_Mymr-eng_Latn \
+--mt_train_src_list mya_Mymr \
+--mt_train_tgt_list eng_Latn \
+--mt_test_src_list mya_Mymr \
+--mt_test_tgt_list eng_Latn \
 --dataset_name allenai/nllb \
 --target_dataset_name custom-burmese-social \
---target_dataset_path /home/skhanuja/demux/target-burmese \
+--target_dataset_path target-burmese \
 --dataset_config_file scripts/train/dataset-configs.yaml \
 --save_dataset_path /projects/tir3/users/skhanuja/demux-mt-demo/selected_data \
 --model_name_or_path facebook/nllb-200-distilled-600M \
@@ -58,7 +66,7 @@ python src/train_al.py \
 --strategy average_dist \
 --cache_dir /scratch/${USER}/cache \
 --checkpointing_steps 1000 \
---per_language_subset_size 10000 \
+--per_language_subset_size 1000000 \
 --silent true
 
 

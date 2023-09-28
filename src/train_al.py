@@ -139,6 +139,30 @@ def parse_args():
         default=False,
         help="Whether to get all English configs for OPUS-100.",
     )
+    parser.add_argument(
+        "--mt_train_src_list",
+        type=str,
+        default=None,
+        help="Comma-separated list of languages to be used as source, this needs to be of the same length as source_languages.",
+    )
+    parser.add_argument(
+        "--mt_train_tgt_list",
+        type=str,
+        default=None,
+        help="Comma-separated list of languages to be used as target, this needs to be of the same length as source_languages.",
+    )
+    parser.add_argument(
+        "--mt_test_src_list",
+        type=str,
+        default=None,
+        help="Comma-separated list of languages to be used as source, this needs to be of the same length as target_languages.",
+    )
+    parser.add_argument(
+        "--mt_test_tgt_list",
+        type=str,
+        default=None,
+        help="Comma-separated list of languages to be used as target, this needs to be of the same length as target_languages.",
+    )
 
     # Model arguments
     parser.add_argument(
@@ -585,6 +609,15 @@ def parse_args():
     # Check if strategy is random, egalitarian, or gold and set compute_embeddings to false if so
     if args.strategy in ['random', 'egalitarian'] or args.strategy.startswith('gold'):
         args.compute_embeddings = False
+    
+    if args.mt_train_src_list is not None:
+        args.mt_train_src_list = args.mt_train_src_list.split(",")
+    if args.mt_train_tgt_list is not None:
+        args.mt_train_tgt_list = args.mt_train_tgt_list.split(",")
+    if args.mt_test_src_list is not None:
+        args.mt_test_src_list = args.mt_test_src_list.split(",")
+    if args.mt_test_tgt_list is not None:
+        args.mt_test_tgt_list = args.mt_test_tgt_list.split(",")
 
     return args
 
