@@ -92,7 +92,9 @@ bash scripts/train/wandb/create_config_jobs.sh
 ```
 This will create a sweep job for each config in `scripts/train/wandb/jobs`.
 
-We also support multi-GPU training, using HF `accelerate`. A sample script can be found here: `scripts/train/sample_multi-gpu.sh`
+We also support multi-GPU training, using HF `accelerate`. A sample script can be found here: `scripts/train/sample_multi-gpu.sh`.
+
+Support for MT was added post other supported tasks. Please find sample run scripts for MT under `scripts/train/wandb/jobs/mt`.
 
 
 ## Step 3: Collect and visualize results
@@ -122,7 +124,8 @@ bash scripts/evaluation/run_visualize_embeddings_single_model.sh [EMBEDDING_PATH
 ## (Optional) 
 - Find uncertainty and loss correlations between target point and neighborhood:
   - ``` bash scripts/train/run_find_correlation.sh ```
-- Get lang2vec distances (<span style="color:red">TODO: complete documentation</span>)
+- Get lang2vec distances between all language pairs for a given dataset
+  - ``` bash scripts/helper/l2v/run_l2v_distances.sh ```
 
 ## Baselines
 - `RANDOM` and `EGALITARIAN` are already included in our fine-tuning scripts above.
@@ -139,13 +142,13 @@ With regards to models, the scripts should work with any model supported by Hugg
 With regards to datasets, the scripts should work with any dataset supported by HuggingFace OR custom dataset files (saved in arrow format). If using an HF dataset, one must specify the following: `source_languages`, `target_languages` and `dataset`. If using custom dataset files, one must specify: `source_dataset_path` and `target_dataset_path`. The `source_dataset_path` and `target_dataset_path` must be directories contining the following files:
 ```
 source_dataset_path: 
-  - train.arrow
-  - validation.arrow
+  - train
+  - validation
 target_dataset_path: 
-  - target.arrow
-  - test.arrow
+  - target
+  - test
 ```
-In the above, `train.arrow` and `validation.arrow` contain the train and test splits for the source data, `target.arrow` is the unlabelled target data, and `test.arrow` is the test data we want to eventually improve performance for.
+In the above, `train` and `validation` contain the train and test splits for the source data, `target` is the unlabelled target data, and `test` is the test data we want to eventually improve performance for. Each directory can have the following files: `data-*of*.arrow`, `dataset_info.json` and `state.json`. A sample script to convert a CSV file to this format is given in `convert_csv_to_arrow.py`. If a language column is not specified, we add it as "unknown" in the script.
 
 One can even specify a custom dataset for source/target and use an HF dataset for the other. Note that if a custom dataset is provided, it will always override HF for the source or target. 
 
@@ -163,10 +166,10 @@ Note that many of the above variables are optional. For example, if you want to 
 bash scripts/train/run_ft_en.sh xlm-roberta-large custom "" "" "" <path_to_source_data> <path_to_target_data>
 ```
 
-(<span style="color:red">[insert example usage and complete]</span>)
+The scripts under `scripts/train/wandb/jobs/mt` for example, use a custom dataset as the target and a HF dataset as the source. 
 
-## Step 2: Fine-tune multilingual models on source languages using active learning
 
-If you want us to support more tasks, models, datasets; or have suggestions on better ways to measure distance and uncertainty for any task, please let us know by opening an issue or sending us an email. We are happy to discuss and add support for your use case! 
+# Additional Support/Issues?
+If you want us to support more tasks, models, datasets; or have suggestions on better ways to measure distance and uncertainty for any task, please let us know by opening an issue or sending us an email at <skhanuja@andrew.cmu.edu>. We are happy to discuss and add support for your use case! 
 
 

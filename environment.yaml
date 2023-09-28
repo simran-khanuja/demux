@@ -35,6 +35,7 @@ dependencies:
       - charset-normalizer==3.1.0
       - click==8.1.3
       - cmake==3.26.3
+      - colorama==0.4.6
       - conda-pack==0.6.0
       - contourpy==1.0.7
       - cycler==0.11.0
@@ -55,6 +56,7 @@ dependencies:
       - kiwisolver==1.4.4
       - lightgbm==3.3.5
       - lit==16.0.2
+      - lxml==4.9.3
       - markupsafe==2.1.2
       - matplotlib==3.7.1
       - mpmath==1.3.0
@@ -77,9 +79,11 @@ dependencies:
       - pandas==2.0.1
       - pathtools==0.1.2
       - pillow==9.5.0
+      - portalocker==2.8.2
       - protobuf==4.22.3
       - psutil==5.9.5
       - pyarrow==11.0.0
+      - pycountry==22.3.5
       - pyparsing==3.0.9
       - python-dateutil==2.8.2
       - pytz==2023.3
@@ -87,6 +91,7 @@ dependencies:
       - regex==2023.3.23
       - requests==2.29.0
       - responses==0.18.0
+      - sacrebleu==2.3.1
       - scikit-learn==1.2.2
       - scipy==1.10.1
       - seaborn==0.12.2
@@ -96,6 +101,7 @@ dependencies:
       - six==1.16.0
       - smmap==5.0.0
       - sympy==1.11.1
+      - tabulate==0.9.0
       - threadpoolctl==3.1.0
       - tokenizers==0.13.3
       - torch==2.0.0
@@ -105,7 +111,7 @@ dependencies:
       - typing-extensions==4.5.0
       - tzdata==2023.3
       - urllib3==1.26.15
-      - wandb==0.15.0
+      - wandb==0.15.11
       - xgboost==1.4.2
       - xlrd==2.0.1
       - xxhash==3.2.0
