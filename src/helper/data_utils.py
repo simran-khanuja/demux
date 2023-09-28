@@ -1,4 +1,5 @@
 from datasets import load_dataset, Dataset, load_dataset_builder, load_from_disk
+from datasets import get_dataset_config_names
 from typing import Dict, List, Tuple, Any
 from transformers import PreTrainedTokenizerFast
 from accelerate import Accelerator
@@ -261,11 +262,8 @@ def get_mt_config_names(
     """
     Get MT config names.
     """
-    config_names = []
+    config_names = get_dataset_config_names(dataset_name)
     if dataset_name == 'opus100':
-        builder = load_dataset_builder('opus100', 'af-en')
-        # Get a list of all configuration names
-        config_names = list(builder.builder_configs.keys())
         if 'mbart' in model_name_or_path:
             mbart_languages = list(OPUS2MBART_ID_MAP.keys())
             mbart_supported_languages = []
@@ -275,10 +273,6 @@ def get_mt_config_names(
                 if src in mbart_languages and tgt in mbart_languages:
                     mbart_supported_languages.append(config)               
             config_names = mbart_supported_languages
-    elif dataset_name == 'facebook/flores':
-        builder = load_dataset_builder('facebook/flores', 'eng_Latn-ukr_Cyrl')
-        # Get a list of all configuration names
-        config_names = list(builder.builder_configs.keys())
 
     return config_names
 
@@ -379,13 +373,26 @@ def load_train_datasets(
             if args.dataset_name == "udpos":
                 if len(source_languages[0]) == 2:
                     source_languages = [UDPOS_ID_MAP[lang] for lang in source_languages]
-            for index, source_language in enumerate(source_languages):
+            for source_language in source_languages:
                 if args.dataset_name in ["udpos", "PAN-X"]:
                     train_dataset = load_dataset("xtreme", args.dataset_name + "." + source_language, split="train", cache_dir=args.cache_dir)
                     validation_dataset = load_dataset("xtreme", args.dataset_name + "." + source_language, split="validation", cache_dir=args.cache_dir)
                 elif args.dataset_name == "tydiqa":
                     train_dataset = get_tydiqa_dataset(language=source_language, split="train", cache_dir=args.cache_dir)
                     validation_dataset = get_tydiqa_dataset(language=source_language, split="validation", cache_dir=args.cache_dir)
+                elif args.task_type in ["mt"]:
+                    config_names = get_dataset_config_names(args.dataset_name)
+                    config_language = source_language
+                    src, tgt = source_language.split("-")
+                    tgt_src = "-".join([tgt, src])
+                    if tgt_src in config_names and not source_language in config_names:
+                        config_language = tgt_src
+                    train_dataset = load_dataset(args.dataset_name, config_language, split="train", cache_dir=args.cache_dir)
+                    try:
+                        validation_dataset = load_dataset(args.dataset_name, config_language, split="validation", cache_dir=args.cache_dir)
+                    except Exception as e:
+                        print("Failed to load validation dataset, splitting train into 90/10 train/val", e)
+                        validation_dataset = train_dataset.select(range(1000))
                 else:
                     train_dataset = load_dataset(args.dataset_name, source_language, split="train", cache_dir=args.cache_dir)
                     try:
@@ -423,19 +430,14 @@ def load_train_datasets(
                 raw_train_dataset = raw_train_dataset.map(partial(add_language, language=source_language), batched=True)
                 raw_validation_dataset = validation_dataset.map(partial(add_language, language=source_language), batched=True)
                 if args.task_type in ["mt"]:
-                    src, tgt = args.mt_train_src_list[index], args.mt_train_tgt_list[index]
+                    src, tgt = source_language.split("-")
                     raw_train_dataset = raw_train_dataset.map(partial(recast_mt_features, \
                         dataset_name=args.dataset_name, source_language=src, target_language=tgt), batched=True)
                     raw_validation_dataset = raw_validation_dataset.map(partial(recast_mt_features, \
                         dataset_name=args.dataset_name, source_language=src, target_language=tgt), batched=True)
                     
-                    src_tgt = src + "-" + tgt
-                    raw_train_datasets[src_tgt] = raw_train_dataset
-                    raw_validation_datasets[src_tgt] = raw_validation_dataset
-
-                else:
-                    raw_train_datasets[source_language] = raw_train_dataset
-                    raw_validation_datasets[source_language]=raw_validation_dataset
+                raw_train_datasets[source_language] = raw_train_dataset
+                raw_validation_datasets[source_language]=raw_validation_dataset
 
                 logger.info(f"Loaded train and validation datasets for {source_language}")
                 logger.info(f"Train dataset size: {len(raw_train_dataset)}")
@@ -443,9 +445,9 @@ def load_train_datasets(
 
     
         # Preprocess train and validation datasets
-        for index, (language, raw_train_dataset) in enumerate(raw_train_datasets.items()):
+        for language, raw_train_dataset in raw_train_datasets.items():
             if args.task_type in ["mt"]:
-                src, tgt = args.mt_train_src_list[index], args.mt_train_tgt_list[index]
+                src, tgt = language.split("-")
                 tokenizer = set_mt_tokenizer_languages(src, tgt, args.dataset_name, \
                     args.model_name_or_path, tokenizer)
                 if not tokenizer:
@@ -465,9 +467,9 @@ def load_train_datasets(
                 )
             logger.info(f"Processed train dataset size for {language}: {len(processed_train_datasets[language])}")
         
-        for index, (language, raw_validation_dataset) in enumerate(raw_validation_datasets.items()):
+        for language, raw_validation_dataset in raw_validation_datasets.items():
             if args.task_type in ["mt"]:
-                src, tgt = args.mt_train_src_list[index], args.mt_train_tgt_list[index]
+                src, tgt = language.split("-")
                 tokenizer = set_mt_tokenizer_languages(src, tgt, args.dataset_name, \
                     args.model_name_or_path, tokenizer)
                 if not tokenizer:
@@ -525,7 +527,8 @@ def load_train_datasets(
                 raw_target_datasets[language] = raw_target_dataset.filter(lambda x: x["language"] == language)
             # Recast mt features
             if args.task_type in ["mt"]:
-                for src, tgt, language in zip(args.mt_test_src_list, args.mt_test_tgt_list, raw_target_datasets.keys()):
+                for language in raw_target_datasets.keys():
+                    src, tgt = language.split("-")
                     raw_target_datasets[language] = raw_target_datasets[language].map(partial(recast_mt_features, \
                         dataset_name=target_dataset_name, source_language=src, target_language=tgt, \
                             source_data_column=source_data_column, target_data_column=target_data_column), batched=True)
@@ -536,17 +539,25 @@ def load_train_datasets(
             if target_dataset_name == "udpos":
                 if len(target_languages[0]) == 2:
                     target_languages = [UDPOS_ID_MAP[lang] for lang in target_languages]
-            for index, target_language in enumerate(target_languages):
+            for target_language in target_languages:
                 if target_dataset_name in ["udpos", "PAN-X"]:
                     raw_target_dataset = load_dataset("xtreme", target_dataset_name + "." + target_language, split="validation", cache_dir=args.cache_dir)
                 elif target_dataset_name == "tydiqa":
                     raw_target_dataset = get_tydiqa_dataset(language=target_language, split="validation", cache_dir=args.cache_dir)
-                else:
+                elif args.task_type in ["mt"]:
                     if target_dataset_name == "facebook/flores":
                         split = "dev"
                     else:
                         split = "validation"
-                    raw_target_dataset = load_dataset(target_dataset_name, target_language, split=split, cache_dir=args.cache_dir)
+                    config_names = get_dataset_config_names(target_dataset_name)
+                    config_language = target_language
+                    src, tgt = target_language.split("-")
+                    tgt_src = "-".join([tgt, src])
+                    if tgt_src in config_names and not target_language in config_names:
+                        config_language = tgt_src
+                    raw_target_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
+                else:
+                    raw_target_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
 
                 # Deduplicate target dataset: Token classification datasets (udpos and PAN-X) have duplicate examples
                 if target_dataset_name in ["udpos", "PAN-X"]:
@@ -562,22 +573,20 @@ def load_train_datasets(
                 # Add language column
                 deduplicated_target_dataset = deduplicated_target_dataset.map(partial(add_language, language=target_language), batched=True)
                 if args.task_type in ["mt"]:
-                    src, tgt = args.mt_test_src_list[index], args.mt_test_tgt_list[index]
+                    src, tgt = target_language.split("-")
                     deduplicated_target_dataset = deduplicated_target_dataset.map(partial(recast_mt_features, dataset_name=target_dataset_name, \
                         source_language=src, target_language=tgt), batched=True)
-                    src_tgt = src + "-" + tgt
-                    raw_target_datasets[src_tgt] = deduplicated_target_dataset
-                else:
-                    raw_target_datasets[target_language] = deduplicated_target_dataset
+                    
+                raw_target_datasets[target_language] = deduplicated_target_dataset
 
                 # If target_remove_columns is None, then get column names
                 if target_remove_columns is None:
                     target_remove_columns = deduplicated_target_dataset.column_names
     
         # Preprocess target datasets
-        for index, (language, raw_target_dataset) in enumerate(raw_target_datasets.items()):
+        for language, raw_target_dataset in raw_target_datasets.items():
             if args.task_type in ["mt"]:
-                src, tgt = args.mt_test_src_list[index], args.mt_test_tgt_list[index]
+                src, tgt = language.split("-")
                 tokenizer = set_mt_tokenizer_languages(src, tgt, args.target_dataset_name, \
                     args.model_name_or_path, tokenizer)
                 if not tokenizer:
@@ -652,7 +661,8 @@ def load_test_datasets(
             
             # Recast mt features
             if args.task_type in ["mt"]:
-                for src, tgt, language in zip(args.mt_test_src_list, args.mt_test_tgt_list, raw_test_datasets.keys()):
+                for language in raw_test_datasets.keys():
+                    src, tgt = language.split("-")
                     raw_test_datasets[language] = raw_test_datasets[language].map(partial(recast_mt_features, \
                         dataset_name=args.target_dataset_name, source_language=src, target_language=tgt, \
                             source_data_column=source_data_column, target_data_column=target_data_column), batched=True)
@@ -662,17 +672,25 @@ def load_test_datasets(
             if target_dataset_name == "udpos":
                 if len(target_languages[0]) == 2:
                     target_languages = [UDPOS_ID_MAP[lang] for lang in target_languages]
-            for index, target_language in enumerate(target_languages):
+            for target_language in target_languages:
                 if target_dataset_name in ["udpos", "PAN-X"]:
                     raw_test_dataset = load_dataset("xtreme", target_dataset_name + "." + target_language, split="test", cache_dir=args.cache_dir)
                 elif target_dataset_name == "tydiqa":
                     raw_test_dataset = get_tydiqa_dataset(language=target_language, split="test", cache_dir=args.cache_dir)
-                else:
+                elif args.task_type in ["mt"]:
                     if target_dataset_name == "facebook/flores":
                         split = "devtest"
                     else:
                         split = "test"
-                    raw_test_dataset = load_dataset(target_dataset_name, target_language, split=split, cache_dir=args.cache_dir)
+                    config_names = get_dataset_config_names(target_dataset_name)
+                    config_language = target_language
+                    src, tgt = target_language.split("-")
+                    tgt_src = "-".join([tgt, src])
+                    if tgt_src in config_names and not target_language in config_names:
+                        config_language = tgt_src
+                    raw_test_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
+                else:
+                    raw_test_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
         
                 # Take samples if debug
                 if args.debug:
@@ -682,21 +700,18 @@ def load_test_datasets(
                 with accelerator.main_process_first():
                     raw_test_dataset = raw_test_dataset.map(partial(add_language, language=target_language), batched=True)
                     if args.task_type in ["mt"]:
-                        src, tgt = args.mt_test_src_list[index], args.mt_test_tgt_list[index]
+                        src, tgt = target_language.split("-")
                         raw_test_dataset = raw_test_dataset.map(partial(recast_mt_features, dataset_name=target_dataset_name, \
                             source_language=src, target_language=tgt), batched=True)
-                        src_tgt = src + "-" + tgt
-                        raw_test_datasets[src_tgt] = raw_test_dataset
-                    else:
-                        raw_test_datasets[target_language] = raw_test_dataset
+                    raw_test_datasets[target_language] = raw_test_dataset
 
                 # Remove columns from the datasets
                 if target_remove_columns is None:
                     target_remove_columns = raw_test_dataset.column_names
 
-        for index, (language, raw_test_dataset) in enumerate(raw_test_datasets.items()):
+        for language, raw_test_dataset in raw_test_datasets.items():
             if args.task_type in ["mt"]:
-                src, tgt = args.mt_test_src_list[index], args.mt_test_tgt_list[index]
+                src, tgt = language.split("-")
                 tokenizer = set_mt_tokenizer_languages(src, tgt, args.target_dataset_name, \
                     args.model_name_or_path, tokenizer)
                 if not tokenizer:

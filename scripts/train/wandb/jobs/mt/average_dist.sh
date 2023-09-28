@@ -30,12 +30,8 @@ echo ${WANDB_MODE}
 
 python src/train_al.py \
 --do_active_learning true \
---source_languages eng_Latn-mya_Mymr \
+--source_languages mya_Mymr-eng_Latn \
 --target_languages mya_Mymr-eng_Latn \
---mt_train_src_list mya_Mymr \
---mt_train_tgt_list eng_Latn \
---mt_test_src_list mya_Mymr \
---mt_test_tgt_list eng_Latn \
 --dataset_name allenai/nllb \
 --target_dataset_name custom-burmese-social \
 --target_dataset_path target-burmese \
