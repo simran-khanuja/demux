@@ -192,6 +192,7 @@ def eval_model_mt(args, tokenizer, model, eval_dataloader, metric, accelerator):
     samples_seen = 0
     model, eval_dataloader = accelerator.prepare(model, eval_dataloader)
     model.eval()
+    all_decoded_preds = []
     for step, batch in enumerate(eval_dataloader):
         with torch.no_grad():
             generated_tokens = accelerator.unwrap_model(model).generate(
@@ -229,8 +230,9 @@ def eval_model_mt(args, tokenizer, model, eval_dataloader, metric, accelerator):
                     samples_seen += len(decoded_labels)
 
             metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+            all_decoded_preds.extend(decoded_preds)
     eval_metric = metric.compute()
-    eval_metric["predictions"] = decoded_preds
+    eval_metric["predictions"] = all_decoded_preds
     logger.info({"bleu": eval_metric["score"]})
     return eval_metric
 
