@@ -1,0 +1,2 @@
+uncertainty_gold_delta: Average = -3.74071740584561, Variance = 0.758312811692322
+uncertainty_egal_delta: Average = -0.1431147428618189, Variance = 0.5319352823170692
