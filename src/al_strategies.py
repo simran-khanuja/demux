@@ -11,8 +11,12 @@ import numpy as np
 import gc
 import math
 from torch.nn import CrossEntropyLoss
-
+import torch.nn.functional as F
 from helper.data_utils import UDPOS_ID_MAP, create_output_dirs
+from google.cloud import translate_v2 as translate
+
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"src/helper/googlekey.json"
+translate_client = translate.Client()
 
 logger = get_logger(__name__)
 
@@ -267,39 +271,59 @@ def get_indices(args,
 
     ################################# TODO: ask if better way to deal with larger train embedding matrices #####################################
     if strategy=="average_dist":
-        logger.info("Diversity mean strategy")
+        print("Diversity mean strategy")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         if len(train_embeddings) > args.max_train_batch_size:
             mean_budget_dists_batches = torch.empty([0]).to(device)
+            mean_budget_sim_batches = torch.empty([0]).to(device)
             topk_indices_batches = []
 
             for i in range(0, len(train_embeddings), args.max_train_batch_size):
+                print("Batch: ", i)
                 end_idx = min(i + args.max_train_batch_size, len(train_embeddings))
+                # Calculate distance between train and target embeddings
                 dist_matrix_sample = torch.cdist(train_embeddings[i:end_idx], target_embeddings, p=2).to(device)
-        
                 dist_matrix_sample_mean = torch.mean(dist_matrix_sample, dim=1)
                 k = min(budget, len(dist_matrix_sample_mean))
         
+                # Get topk samples with least distance
                 mean_budget_dists_sample, topk_indices_sample = torch.topk(dist_matrix_sample_mean, k, largest=False)
-        
                 mean_budget_dists_batches = torch.cat((mean_budget_dists_batches, mean_budget_dists_sample))
         
                 adjusted_indices = topk_indices_sample + i
                 topk_indices_batches.extend(adjusted_indices.tolist())
-            
+                
+                # cosine similarity
+                # cosine_sim_sample = F.cosine_similarity(train_embeddings[i:end_idx], target_embeddings, dim=1).to(device)
+                # cosine_sim_sample_mean = torch.mean(cosine_sim_sample, dim=1)
+                # # Get top k points having highest mean cosine similarity
+                # mean_budget_sim_sample, topk_indices_cosine_sim_sample = torch.topk(cosine_sim_sample_mean, k, largest=True)
+                # mean_budget_sim_batches = torch.cat((mean_budget_sim_batches, mean_budget_sim_sample))
+                # adjusted_indices = topk_indices_cosine_sim_sample + i
+                # topk_indices_batches.extend(adjusted_indices.tolist())
+
             # Select the top 'budget' mean distances and indices
             _, topk_indices_mean_dist = torch.topk(mean_budget_dists_batches, budget, largest=False)
             topk_indices = [topk_indices_batches[idx] for idx in topk_indices_mean_dist.tolist()]
             topk_indices = torch.tensor(topk_indices).to(device)
 
+            # _, topk_indices_mean_sim = torch.topk(mean_budget_sim_batches, budget, largest=True)
+            # topk_indices = [topk_indices_batches[idx] for idx in topk_indices_mean_sim.tolist()]
+
         else:
+            print("Single batch")
             dist_matrix = torch.cdist(train_embeddings, target_embeddings, p=2).to(accelerator.device)
             top_mean_distances, topk_indices = torch.topk(torch.mean(dist_matrix, dim=1), min(budget, dist_matrix.shape[0]), largest=False)
-        
+
             logger.info(f"Min mean dist: {top_mean_distances[0]}")
             logger.info(f"Max mean dist: {top_mean_distances[-1]}")
+            # sim_matrix = F.cosine_similarity(train_embeddings, target_embeddings, dim=1).to(device)
+            # top_mean_sim, topk_indices = torch.topk(torch.mean(sim_matrix, dim=1), min(budget, sim_matrix.shape[0]), largest=True)
+
+            # logger.info(f"Min mean sim: {top_mean_sim[0]}")
+            # logger.info(f"Max mean sim: {top_mean_sim[-1]}")
 
         # Cast top_k indices to list of ints
         topk_indices = topk_indices.to(torch.int)
@@ -349,10 +373,18 @@ def get_indices(args,
                 values, indices = torch.sort(dist_matrix_sample, dim=1)
                 sorted_values = torch.cat((sorted_values, values[:, :max_nn]))
                 sorted_indices = torch.cat((sorted_indices, indices[:, :max_nn]))
+
+                # sim_matrix_sample = F.cosine_similarity(target_embeddings[i:end_idx].unsqueeze(1), train_embeddings.unsqueeze(0), dim=2).to(device)
+
+                # values, indices = torch.sort(sim_matrix_sample, dim=1, descending=True)
+                # sorted_values = torch.cat((sorted_values, values[:, :max_nn]))
+                # sorted_indices = torch.cat((sorted_indices, indices[:, :max_nn]))
         
         else:
             dist_matrix = torch.cdist(target_embeddings, train_embeddings, p=2).to(device)
             sorted_values, sorted_indices = torch.sort(dist_matrix, dim=1)
+            # sim_matrix = F.cosine_similarity(target_embeddings, train_embeddings, dim=1).to(device)
+            # sorted_values, sorted_indices = torch.sort(sim_matrix, dim=1, descending=True)
 
         k_value = args.k_value if args.k_value is not None else 1
         candidate_indices = previously_selected_indices.copy()
@@ -491,13 +523,24 @@ def save_dataset(
         os.makedirs(save_embeddings_path, exist_ok=True)
     
     # Save dataset and embeddings
-    raw_train_dataset.select(selected_indices).to_csv(save_dataset_path + '/' + str(budget) + '.csv')
+    selected_train_dataset = raw_train_dataset.select(selected_indices)
+    # get google translate translations of "source" column
+    if args.task_type in ["mt"]:
+        source_inputs = selected_train_dataset.to_pandas()["translation"].tolist()
+        translations = []
+        for source_input in source_inputs:
+            input = source_input["source"]
+            target = translate_client.translate(input, target_language="en")
+            translations.append(target["translatedText"])
+        selected_train_dataset = selected_train_dataset.add_column("gtrans", translations)
+
+    # Save in csv format
+    selected_train_dataset.to_csv(save_dataset_path + '/' + str(budget) + '.csv')
     # Save in arrow format
-    raw_train_dataset.select(selected_indices).save_to_disk(save_dataset_path)
-    logger.info("train dataset first sample: {}".format(raw_train_dataset[0]))
+    selected_train_dataset.save_to_disk(save_dataset_path)
+    logger.info("train dataset first sample: {}".format(selected_train_dataset[0]))
 
     # Save language distribution of selected dataset
-    selected_train_dataset = raw_train_dataset.select(selected_indices)
     logger.info("selected train dataset first sample: {}".format(selected_train_dataset[0]))
     language_distribution = selected_train_dataset.to_pandas()["language"].value_counts()
     language_distribution.to_csv(save_dataset_path + '/' + str(budget) + '_language_distribution.csv')
@@ -566,6 +609,9 @@ def get_train_dataset(args,
         for budget in budget_list:
             # Create dirs for this budget
             save_dataset_path, _, _, save_embeddings_path = create_output_dirs(args, budget, accelerator)
+
+            print(save_dataset_path)
+            print(save_embeddings_path)
 
             # Save dataset, embeddings and language distribution
             with accelerator.main_process_first():

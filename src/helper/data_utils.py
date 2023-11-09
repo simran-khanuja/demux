@@ -10,6 +10,10 @@ from accelerate.logging import get_logger
 from functools import partial
 from sklearn.model_selection import train_test_split
 import pycountry
+from google.cloud import translate_v2 as translate
+
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = r"src/helper/googlekey.json"
+translate_client = translate.Client()
 
 
 logger = get_logger(__name__)
@@ -220,7 +224,7 @@ def recast_mt_features(
     targets = []
     if dataset_name == 'opus100':
         for example in examples['translation']:
-            if source_language and target_language in example:
+            if source_language and target_language in example and example[source_language] not in sources:
                 sources.append(example[source_language])
                 targets.append(example[target_language])
             else:
@@ -228,10 +232,11 @@ def recast_mt_features(
                 targets.append('')
     elif dataset_name == 'facebook/flores':
         for src, tgt in zip(examples["sentence_"+source_language], examples["sentence_"+target_language]):
-            sources.append(src)
-            targets.append(tgt)
+            if src not in sources:
+                sources.append(src)
+                targets.append(tgt)
     
-    elif dataset_name == 'allenai/nllb':
+    elif dataset_name == 'allenai/nllb' or dataset_name == 'orgcatorg/multilingual' or dataset_name == 'custom-source':
         for example in examples['translation']:
             sources.append(example[source_language])
             targets.append(example[target_language])
@@ -340,26 +345,36 @@ def load_train_datasets(
     # if yes the source dataset path should have train and validation datasets stored in arrow format
     with accelerator.main_process_first():
         if args.source_dataset_path is not None:
-            raw_train_dataset = load_from_disk(args.source_dataset_path)["train"]
-            raw_validation_dataset = load_from_disk(args.source_dataset_path)["validation"]
+            train_dataset = load_from_disk(args.source_dataset_path)
+            raw_train_dataset = train_dataset["train"]
+            if "validation" in train_dataset:
+                raw_validation_dataset = train_dataset["validation"]
+            else:
+                raw_validation_dataset = raw_train_dataset.select(range(100))
             # Remove columns from the datasets
             if remove_columns is None:
                 remove_columns = raw_train_dataset.column_names
             # Check if the dataset has a language column
             if "language" not in raw_train_dataset.column_names:
-                raw_train_dataset = raw_train_dataset.map(partial(add_language, language="unknown"), batched=True)
-                raw_validation_dataset = raw_validation_dataset.map(partial(add_language, language="unknown"), batched=True)
+                # raise error
+                raise ValueError("Language column not found in the dataset. Add a language column with unknown value for \
+                    unknown languages.")
             # Make different train and validation datasets for each language
             for language in list(set(raw_train_dataset["language"])):
                 raw_train_datasets[language] = raw_train_dataset.filter(lambda x: x["language"] == language)
             for language in list(set(raw_validation_dataset["language"])):
                 raw_validation_datasets[language] = raw_validation_dataset.filter(lambda x: x["language"] == language)
+            # train_dataset = load_dataset("parquet", data_files={"train":args.source_dataset_path + "/train.parquet"}, split="train")
+            # raw_train_dataset = train_dataset
+            # raw_validation_dataset = train_dataset.select(range(100))
             # Check if MT and if yes, recast the features
             if args.task_type == 'mt':
-                for src, tgt, language in zip(args.mt_train_src_list, args.mt_train_tgt_list, raw_train_datasets.keys()):
-                    raw_train_dataset[language] = raw_train_dataset[language].map(partial(recast_mt_features, \
+                for source_language in raw_train_datasets.keys():
+                    source_language = source_language.lower()
+                    src, tgt = source_language.split("-")
+                    raw_train_datasets[source_language] = raw_train_datasets[source_language].map(partial(recast_mt_features, \
                         dataset_name=args.dataset_name, source_language=src, target_language=tgt), batched=True)
-                    raw_validation_datasets[language] = raw_validation_datasets[language].map(partial(recast_mt_features, \
+                    raw_validation_datasets[source_language] = raw_validation_datasets[source_language].map(partial(recast_mt_features, \
                         dataset_name=args.dataset_name, source_language=src, target_language=tgt), batched=True)
         else:
             if args.task_type in ['mt'] and args.dataset_name in ['opus100'] and args.get_all_en_configs:
@@ -382,12 +397,13 @@ def load_train_datasets(
                     validation_dataset = get_tydiqa_dataset(language=source_language, split="validation", cache_dir=args.cache_dir)
                 elif args.task_type in ["mt"]:
                     config_names = get_dataset_config_names(args.dataset_name)
+                    config_names.append('eng_Latn-mya_Mymr')
                     config_language = source_language
                     src, tgt = source_language.split("-")
                     tgt_src = "-".join([tgt, src])
                     if tgt_src in config_names and not source_language in config_names:
                         config_language = tgt_src
-                    train_dataset = load_dataset(args.dataset_name, config_language, split="train", cache_dir=args.cache_dir)
+                    # train_dataset = load_dataset(args.dataset_name, config_language, split="train", cache_dir=args.cache_dir)
                     try:
                         validation_dataset = load_dataset(args.dataset_name, config_language, split="validation", cache_dir=args.cache_dir)
                     except Exception as e:
@@ -404,17 +420,17 @@ def load_train_datasets(
 
                 # Deduplicate train dataset: Token classification datasets (udpos and PAN-X) have duplicate examples
                 if args.dataset_name in ["udpos", "PAN-X"]:
-                    # deduplicated_train_dataset = deduplicate_dataset(train_dataset, check_column="tokens")
+                    deduplicated_train_dataset = deduplicate_dataset(train_dataset, check_column="tokens")
                     deduplicated_train_dataset = train_dataset
                 else:
                     deduplicated_train_dataset = train_dataset
             
+                raw_train_dataset = deduplicated_train_dataset
                 # Select a subset of the train dataset if needed
                 if args.per_language_subset_size:
                     if len(deduplicated_train_dataset) > args.per_language_subset_size:
                         raw_train_dataset = deduplicated_train_dataset.select(range(args.per_language_subset_size))
-                else:
-                    raw_train_dataset = deduplicated_train_dataset
+                
             
                 if args.debug:
                     if len(raw_train_dataset) > 100:
@@ -435,6 +451,10 @@ def load_train_datasets(
                         dataset_name=args.dataset_name, source_language=src, target_language=tgt), batched=True)
                     raw_validation_dataset = raw_validation_dataset.map(partial(recast_mt_features, \
                         dataset_name=args.dataset_name, source_language=src, target_language=tgt), batched=True)
+
+                    # Deduplicate train dataset
+                    deduplicated_train_dataset = deduplicate_mt(raw_train_dataset)
+                    raw_train_dataset = deduplicated_train_dataset
                     
                 raw_train_datasets[source_language] = raw_train_dataset
                 raw_validation_datasets[source_language]=raw_validation_dataset
@@ -550,6 +570,7 @@ def load_train_datasets(
                     else:
                         split = "validation"
                     config_names = get_dataset_config_names(target_dataset_name)
+                    config_names.append('eng_Latn-mya_Mymr')
                     config_language = target_language
                     src, tgt = target_language.split("-")
                     tgt_src = "-".join([tgt, src])
@@ -557,7 +578,7 @@ def load_train_datasets(
                         config_language = tgt_src
                     raw_target_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
                 else:
-                    raw_target_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
+                    raw_target_dataset = load_dataset(target_dataset_name, target_language, split="validation", cache_dir=args.cache_dir)
 
                 # Deduplicate target dataset: Token classification datasets (udpos and PAN-X) have duplicate examples
                 if target_dataset_name in ["udpos", "PAN-X"]:
@@ -654,7 +675,8 @@ def load_test_datasets(
             
             # Check if the dataset has a language column
             if "language" not in raw_test_dataset.column_names:
-                raw_test_dataset = raw_test_dataset.map(partial(add_language, language="unknown"), batched=True)
+                # raise error
+                raise ValueError("Target dataset should have a language column, if value unknown, use 'unkown'")
             # Make different target datasets for each language
             for language in raw_test_dataset["language"]:
                 raw_test_datasets[language] = raw_test_dataset.filter(lambda x: x["language"] == language)
@@ -683,6 +705,7 @@ def load_test_datasets(
                     else:
                         split = "test"
                     config_names = get_dataset_config_names(target_dataset_name)
+                    config_names.append('eng_Latn-mya_Mymr')
                     config_language = target_language
                     src, tgt = target_language.split("-")
                     tgt_src = "-".join([tgt, src])
@@ -690,7 +713,7 @@ def load_test_datasets(
                         config_language = tgt_src
                     raw_test_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
                 else:
-                    raw_test_dataset = load_dataset(target_dataset_name, config_language, split=split, cache_dir=args.cache_dir)
+                    raw_test_dataset = load_dataset(target_dataset_name, target_language, split="test", cache_dir=args.cache_dir)
         
                 # Take samples if debug
                 if args.debug:
@@ -743,6 +766,7 @@ def preprocess_datasets(
     max_seq_length: int, 
     train: bool = True,
     add_labels: bool = True, 
+    translate: bool = False,
 ) -> Dict[str, Any]:
     """
     Preprocess datasets.
@@ -888,7 +912,13 @@ def preprocess_datasets(
     
     elif args.task_type in ["mt"]:
         inputs = [ex["source"] for ex in examples["translation"]]
-        targets = [ex["target"] for ex in examples["translation"]]
+        if translate:
+            targets = []
+            for input in inputs:
+                target = translate_client.translate(input, target_language="en")
+                targets.append(target["translatedText"])
+        else:
+            targets = [ex["target"] for ex in examples["translation"]]
         
         model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
 
@@ -947,6 +977,32 @@ def deduplicate_dataset(dataset: Dataset, check_column: str) -> Dataset:
         if dataset_dict[check_column][i] not in deduplicated_dataset[check_column]:
             for key in dataset_dict.keys():
                 deduplicated_dataset[key].append(dataset_dict[key][i])
+    deduplicated_dataset = Dataset.from_dict(deduplicated_dataset)
+    logger.info("Dataset size after deduplication: {}".format(len(deduplicated_dataset)))
+    return deduplicated_dataset
+
+
+def deduplicate_mt(dataset: Dataset) -> Dataset:
+    """
+    Deduplicate dataset.
+
+    Args:
+        dataset (Dataset): Input dataset.
+
+    Returns:
+        Dataset: Deduplicated dataset.
+    """
+    logger.info("Dataset size before deduplication: {}".format(len(dataset)))
+    deduplicated_dataset = {}
+    dataset_dict = dataset.to_dict()
+    for key in dataset_dict.keys():
+        deduplicated_dataset[key] = []
+    sources = []
+    for i in range(len(dataset_dict["translation"])):
+        if dataset_dict["translation"][i]["source"] not in sources:
+            for key in dataset_dict.keys():
+                deduplicated_dataset[key].append(dataset_dict[key][i])
+            sources.append(dataset_dict["translation"][i]["source"])
     deduplicated_dataset = Dataset.from_dict(deduplicated_dataset)
     logger.info("Dataset size after deduplication: {}".format(len(deduplicated_dataset)))
     return deduplicated_dataset

@@ -139,6 +139,12 @@ def parse_args():
         default=False,
         help="Whether to get all English configs for OPUS-100.",
     )
+    parser.add_argument(
+        "--translate",
+        type=bool,
+        default=False,
+        help="Whether to use Google Translate.",
+    )
 
     # Model arguments
     parser.add_argument(
@@ -727,7 +733,9 @@ def main():
                 dataset=args.dataset_name,
                 padding="max_length" if args.pad_to_max_length else False,
                 max_seq_length=args.max_seq_length,
-                train=True),
+                train=True,
+                add_labels=True,
+                translate=args.translate),
                 batched=True,
                 remove_columns=args.remove_columns,
             )
@@ -1030,7 +1038,17 @@ def main():
                     _ = train_loop(raw_train_dataset, args.output_dir, args.pred_output_dir, None)
         
             else:
+                selected_indices=[]
                 model = get_model(args.model_name_or_path, config, tokenizer, accelerator, args)
+            
+                # Load the saved train datasets for each budget and train different models
+                if "," in args.budget:
+                    budget_list = [int(b) for b in args.budget.split(",")]
+                else:
+                    budget_list = [int(args.budget)]
+                
+                highest_budget = max(budget_list)
+                save_dataset_path, output_dir, pred_output_dir, save_embeddings_path = create_output_dirs(args, highest_budget, accelerator)
                 _, _ = get_train_dataset(
                                     args,
                                     args.task_type,
@@ -1038,20 +1056,14 @@ def main():
                                     raw_target_datasets,
                                     processed_train_dataset,
                                     processed_target_dataset,
-                                    selected_indices=[],
-                                    save_dataset_path=None,
-                                    save_embeddings_path=None,
+                                    selected_indices,
+                                    save_dataset_path=save_dataset_path,
+                                    save_embeddings_path=save_embeddings_path,
                                     model=model,
-                                    budget=num_iterations*per_iteration_budget,
+                                    budget=highest_budget,
                                     strategy=args.strategy,
                                     iteration=1,
                                     accelerator=accelerator)
-            
-                # Load the saved train datasets for each budget and train different models
-                if "," in args.budget:
-                    budget_list = [int(b) for b in args.budget.split(",")]
-                else:
-                    budget_list = [int(args.budget)]
                 for budget in budget_list:
                     # Get paths for this budget
                     save_dataset_path, output_dir, pred_output_dir, save_embeddings_path = create_output_dirs(args, budget, accelerator)
