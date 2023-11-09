@@ -1,0 +1,6 @@
+iter_1,random,0.7080300484777554
+iter_1,uncertainty,0.666583629985357
+iter_1,knn_uncertainty_k_1,0.693352440290051
+iter_1,average_dist,0.5761405248625351
+iter_1,gold_ur,0.517288304743612
+iter_1,egalitarian,0.7080300484777554

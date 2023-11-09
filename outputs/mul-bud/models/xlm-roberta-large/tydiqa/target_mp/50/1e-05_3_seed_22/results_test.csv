@@ -1,0 +1,7 @@
+iteration,strategy,ar_test
+iter_1,uncertainty,75.6305878883988
+iter_1,knn_uncertainty_k_1,74.22312134400595
+iter_1,random,72.31110492959601
+iter_1,gold_ar,76.36218310135808
+iter_1,average_dist,73.64024962603776
+iter_1,egalitarian,74.61717336765707

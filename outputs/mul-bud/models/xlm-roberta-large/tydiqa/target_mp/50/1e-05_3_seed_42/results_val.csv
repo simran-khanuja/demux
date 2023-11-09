@@ -1,0 +1,7 @@
+iteration,strategy,id_val,fi_val,te_val,ru_val,sw_val
+iter_1,egalitarian,76.44325794406029,75.09512041418986,75.80098737835898,68.92014517471779,75.57077981865635
+iter_1,gold_ar,72.0467612450777
+iter_1,average_dist
+iter_1,random
+iter_1,uncertainty
+iter_1,knn_uncertainty_k_1

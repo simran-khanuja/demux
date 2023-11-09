@@ -1,0 +1,7 @@
+delta,average
+knn_gold_delta,-2.1564349515155783
+knn_egal_delta,-0.5989820306796503
+avg_dist_gold_delta,-1.820708782865637
+avg_dist_egal_delta,-0.26325586202970896
+uncertainty_gold_delta,-1.7921587708780322
+uncertainty_egal_delta,-0.2347058500421042

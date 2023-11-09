@@ -1,0 +1,5 @@
+average_dist: Average = 73.7, Variance = 0.0085621327631727
+gold_ur: Average = 73.9, Variance = 0.038198963702986866
+egalitarian: Average = 72.3, Variance = 0.09846272612132335
+uncertainty: Average = 72.3, Variance = 0.009578574292507523
+knn_uncertainty_k_1: Average = 72.3, Variance = 0.06128108239675689
