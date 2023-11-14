@@ -1,6 +1,6 @@
 # DeMuX: Data-efficient Multilingual Learning
 [![arXiv](https://img.shields.io/badge/arxiv-demux-blue
-)](https://arxiv.org/abs/2305.14716)
+)](https://arxiv.org/abs/2311.06379)
 
 Code for DeMuX: Active-learning based data-selection strategies for efficient annotation of multilingual data.
 <p align="center">
@@ -199,11 +199,13 @@ If you want us to support more tasks, models, datasets; or have suggestions on b
 If you find this work or our code useful, please consider citing:
 
 ```
-@article{khanuja2023demux,
-  title={DeMuX: Data-efficient Multilingual Learning},
-  author={Khanuja, Simran and Gowriraj, Srinivas and Dery, Lucio and Neubig, Graham},
-  journal={arXiv},
-  year={2023}
+@misc{khanuja2023demux,
+      title={DeMuX: Data-efficient Multilingual Learning}, 
+      author={Simran Khanuja and Srinivas Gowriraj and Lucio Dery and Graham Neubig},
+      year={2023},
+      eprint={2311.06379},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
 }
 ```
 
