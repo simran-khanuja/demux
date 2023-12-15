@@ -88,3 +88,11 @@ custom-burmese-social:
   task_type: mt
   source_data_column: Burmese
   target_data_column: Translated
+
+custom-source:
+  metric: sacrebleu
+  task_type: mt
+
+orgcatorg/multilingual:
+  metric: sacrebleu
+  task_type: mt

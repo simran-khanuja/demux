@@ -4,16 +4,21 @@
 # Usage: bash scripts/train/run_ft_en.sh [model] [dataset]
 # For custom model, pass the path to the model as the 5th argument
 
+# activate conda
+source ~/miniconda3/etc/profile.d/conda.sh 
+conda activate demux-env
+
 set -e 
 
-MODEL=${1:-xlm-roberta-large}
-DATASET=${2:-udpos} # Pass a custom dataset name if you want to use a custom dataset
+MODEL=${1:-infoxlm-large}
+DATASET=${2:-PAN-X} # Pass a custom dataset name if you want to use a custom dataset
 SOURCE_LANGUAGES=${3:-en}
 TARGET_LANGUAGES=${4:-en}
 MODEL_PATH=${5:-xlm-roberta-large} # (Optional) Path to custom model
 SOURCE_DATASET_PATH=${6} # (Optional) Path to custom source dataset (must have train and dev)
 TARGET_DATASET_PATH=${7} # (Optional) Path to custom target dataset (must have target and test)
-OUTPUT_BASE_PATH=${8:-${PWD}/outputs}
+# OUTPUT_BASE_PATH=${8:-${PWD}/outputs}
+OUTPUT_BASE_PATH=${8:-./outputs}
 
 mkdir -p /scratch/${USER}/cache
 mkdir -p ${OUTPUT_BASE_PATH}
@@ -23,13 +28,13 @@ export WANDB_START_METHOD="thread"
 export WANDB_DISABLE_SERVICE=True
 
 # Hyperparameters (change as needed)
-BATCH_SIZE=32
+BATCH_SIZE=64
 MAX_SEQ_LENGTH=128
 SEED=42
 LR=2e-5
 EPOCHS=10
 MAX_TO_KEEP=1 # max checkpoints to keep
-GRAD_ACC_STEPS=2 # gradient accumulation steps
+GRAD_ACC_STEPS=1 # gradient accumulation steps
 
 echo "Training ${MODEL} on ${DATASET} with source languages ${SOURCE_LANGUAGES} and target languages ${TARGET_LANGUAGES}"
 PROJECT_NAME="${MODEL}_en-ft_${DATASET}_${SEED}"

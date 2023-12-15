@@ -21,7 +21,7 @@ for MODEL in "${models[@]}"; do
     # Write job file
     echo "#!/bin/bash
 #SBATCH --job-name=AL_MT_${STRATEGY}
-#SBATCH --output /projects/tir1/users/skhanuja/multilingual_ft/scratch-outputs/scratch_AL_MT_${STRATEGY} 
+#SBATCH --output ./scratch-outputs/scratch_AL_MT_${STRATEGY} 
 #SBATCH --nodes=1
 #SBATCH --mem=32GB
 #SBATCH --gres=gpu:2
@@ -46,18 +46,18 @@ export HF_HOME=/scratch/\${USER}/cache
 export WANDB_START_METHOD=\"thread\"
 export WANDB_DISABLE_SERVICE=True
 
-accelerate launch --config_file /home/skhanuja/.cache/huggingface/accelerate/default_config.yaml --multi_gpu --num_processes=2 src/train_al.py \
+accelerate launch --config_file ~/.cache/huggingface/accelerate/default_config.yaml --multi_gpu --num_processes=2 src/train_al.py \
 --do_active_learning true \
 --get_all_en_configs true \
 --target_languages mya_Mymr-eng_Latn \
 --dataset_name opus100 \
 --target_dataset_name facebook/flores \
 --dataset_config_file scripts/train/dataset-configs.yaml \
---save_dataset_path /projects/tir1/users/skhanuja/multilingual_ft/selected_data \
+--save_dataset_path ./outputs/selected_data \
 --model_name_or_path facebook/mbart-large-50-many-to-many-mmt \
 --embedding_model mbart \
 --save_embeddings true \
---save_embeddings_path /projects/tir1/users/skhanuja/multilingual_ft/embeddings \
+--save_embeddings_path ./outputs/embeddings \
 --inference_batch_size 64 \
 --do_train true \
 --do_predict true \
@@ -67,9 +67,9 @@ accelerate launch --config_file /home/skhanuja/.cache/huggingface/accelerate/def
 --learning_rate 1e-5 \
 --num_train_epochs 3 \
 --max_to_keep 1 \
---output_dir /projects/tir1/users/skhanuja/multilingual_ft/models \
+--output_dir ./outputs/models \
 --save_predictions true \
---pred_output_dir /projects/tir1/users/skhanuja/multilingual_ft/predictions \
+--pred_output_dir ./outputs/predictions \
 --with_tracking true \
 --report_to wandb \
 --project_name AL_MT \

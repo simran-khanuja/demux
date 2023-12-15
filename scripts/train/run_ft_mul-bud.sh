@@ -1,31 +1,35 @@
 #!/bin/bash
-# Path: scripts/train/run_ft_al.sh
-# Script to run finetuning experiments on DeMuX for a given strategy 
-# Usage: bash scripts/train/run_ft_al.sh [model] [dataset]
+# Path: scripts/train/run_ft_mul-bud.sh
+# Script to run finetuning experiments on DeMuX for a given strategy and multiple budgets
+# Usage: bash scripts/train/run_ft_mul-bud.sh <model> <dataset> 
 # For custom model, pass the path to the model as the 5th argument
 
 # activate conda
 source ~/miniconda3/etc/profile.d/conda.sh 
 conda activate demux-env
 
-MODEL=${1:-rembert}
+MODEL=${1:-xlm-roberta-large}
 DATASET=${2:-PAN-X} # Pass a custom dataset name if you want to use a custom dataset
 FT_MODEL_PATH=${3:-./outputs/models/xlm-roberta-large_en-ft_PAN-X}
 CONFIG=${4:-lp}
 STRATEGY=${5:-knn_uncertainty}
-SOURCE_DATASET_PATH=${6} # (Optional) Path to custom source dataset (must have train and dev)
-TARGET_DATASET_PATH=${7} # (Optional) Path to custom target dataset (must have target and test)
-OUTPUT_BASE_PATH=${8:-./outputs/}
+SEED=${6:-42}
+SOURCE_DATASET_PATH=${7} # (Optional) Path to custom source dataset (must have train and dev)
+TARGET_DATASET_PATH=${8} # (Optional) Path to custom target dataset (must have target and test)
+OUTPUT_BASE_PATH=${9:-./mul-bud/outputs}
 
-mkdir -p /scratch/${USER}/cache
+
+mkdir -p /scratch/${USER}/cache/model
+mkdir -p /scratch/${USER}/cache/data
 
 export HF_HOME=/scratch/${USER}/cache
+export HF_DATASETS_CACHE=/scratch/${USER}/cache/data
+export TRANSFORMERS_CACHE=/scratch/${USER}/cache/model
 export WANDB_START_METHOD="thread"
 export WANDB_DISABLE_SERVICE=True
 
 # Training arguments
-BUDGET="1000"
-SEED=42
+BUDGET="5,10,20,50,100,250,500,1000,2500,5000"
 EPOCHS=10
 PER_DEVICE_TRAIN_BATCH_SIZE=64
 PER_DEVICE_EVAL_BATCH_SIZE=64
@@ -47,7 +51,7 @@ then
     # array of source languages arranged in the config order
     SOURCE=( "af,ar,bg,bn,de,el,es,et,eu,fa,fi,he,hi,hu,id,it,ja,jv,ka,kk,ko,ml,mr,ms,my,pt,ru,sw,ta,te,th,tl,tr,ur,vi,yo,zh" \
     "af,ar,bg,bn,de,el,es,et,eu,fa,fi,fr,he,hi,hu,id,it,ja,jv,ka,kk,ko,ml,mr,ms,my,pt,ru,sw,ta,te,th,tl,ur,vi,yo,zh" \
-    "af,ar,bg,bn,de,el,es,et,eu,fa,fi,fr,he,hi,hu,id,it,ja,jv,ka,kk,ko,ml,mr,ms,my,pt,ru,sw,ta,te,th,tl,ur,tr,vi,yo,zh" \
+    "af,ar,bg,bn,de,el,es,et,eu,fa,fi,fr,he,hi,hu,id,it,ja,jv,ka,kk,ko,ml,mr,ms,my,pt,ru,sw,ta,te,th,tl,tr,vi,yo,zh" \
     "af,ar,bg,bn,de,el,es,et,eu,fa,fi,fr,he,hi,hu,it,ja,jv,ka,kk,ko,ml,mr,ms,pt,ru,sw,ta,te,th,tl,tr,ur,yo,zh" \
     "af,bg,bn,de,el,es,et,eu,fa,fi,fr,hi,hu,it,jv,ka,ko,ml,mr,pt,ru,sw,tl,tr,vi" )
     # Learning rate
@@ -106,7 +110,6 @@ then
     INFERENCE_BATCH_SIZE=256
     EPOCHS=3
     GRAD_ACC_STEPS=2
-    BUDGET="5000"
     LR=1e-5
 fi
 
@@ -180,4 +183,6 @@ python src/train_al.py \
 --seed ${SEED} \
 --budget ${BUDGET} \
 --total_rounds ${TOTAL_ROUNDS} \
---strategy ${STRATEGY}
+--strategy ${STRATEGY} \
+--multiple_budgets_one_round true \
+--per_language_subset_size 200000

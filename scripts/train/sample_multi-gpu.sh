@@ -2,13 +2,15 @@ accelerate launch --config_file /home/${USER}/.cache/huggingface/accelerate/defa
 --multi_gpu --num_processes=2 src/train_al.py \
 --do_active_learning true \
 --get_all_en_configs true \
+--source_languages mya_Mymr-eng_Latn \
 --target_languages mya_Mymr-eng_Latn \
---dataset_name opus100 \
---target_dataset_name facebook/flores \
+--dataset_name allenai/nllb \
+--target_dataset_name custom-burmese-social \
+--target_dataset_path target-burmese \
 --dataset_config_file scripts/train/dataset-configs.yaml \
 --save_dataset_path ./outputs/selected_data \
---model_name_or_path facebook/mbart-large-50-many-to-many-mmt \
---embedding_model mbart \
+--model_name_or_path facebook/nllb-200-distilled-600M \
+--embedding_model nllb \
 --save_embeddings true \
 --save_embeddings_path ./outputs/embeddings \
 --inference_batch_size 16 \
@@ -16,7 +18,7 @@ accelerate launch --config_file /home/${USER}/.cache/huggingface/accelerate/defa
 --pad_to_max_length true \
 --per_device_train_batch_size 32 \
 --per_device_eval_batch_size 32 \
---learning_rate 1e-5 \
+--learning_rate 5e-6 \
 --num_train_epochs 3 \
 --max_to_keep 1 \
 --output_dir ./outputs/models \
@@ -31,6 +33,3 @@ accelerate launch --config_file /home/${USER}/.cache/huggingface/accelerate/defa
 --strategy knn_uncertainty \
 --per_language_subset_size 50000 \ 
 --cache_dir /scratch/${USER}/cache
-
-
-# ,be-en,bg-en,bn-en

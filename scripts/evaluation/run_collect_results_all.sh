@@ -1,9 +1,9 @@
 #!/bin/bash
 # Path: scripts/evaluation/run_collect_results_all.sh
 # Collect results for all models, datasets, configs and budgets
-
+# "udpos" "xnli" "tydiqa"
 models=( "infoxlm-large" "xlm-roberta-large" "rembert" )
-datasets=( "PAN-X" "udpos" "xnli" "tydiqa" ) 
+datasets=( "PAN-X"  ) 
 configs=("hp" "mp" "lp" "geo" "lp-pool")
 # budgets=( "5" "10" "20" "50" "100" "250" "500" "1000" "2500" "5000" )
 budgets=( "10000" )
@@ -11,9 +11,8 @@ seeds=( 2 22 42 )
 
 AL_ROUNDS=1
 EPOCHS=10
-SEED=2
 STRATEGY_PREFIX="knn,uncertain,average" # this is to collect deltas of strategies from gold and egalitarian 
-RESULT_BASE_PATH="/data/tir/projects/tir3/users/skhanuja/demux-paper-results/outputs"
+RESULT_BASE_PATH="./outputs"
 
 for SEED in "${seeds[@]}"
 do
