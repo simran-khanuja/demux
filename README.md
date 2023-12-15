@@ -187,26 +187,6 @@ Note that many of the above variables are optional. For example, if you want to 
 bash scripts/train/run_ft_en.sh xlm-roberta-large custom "" "" "" <path_to_source_data> <path_to_target_data>
 ```
 
-The scripts under `scripts/train/wandb/jobs/mt` for example, use a custom dataset as the target and a HF dataset as the source. 
-
-
-## Additional Support/Issues?
-If you want us to support more tasks, models, datasets; or have suggestions on better ways to measure distance and uncertainty for any task, please let us know by opening an issue or sending us an email at <skhanuja@andrew.cmu.edu>. We are happy to discuss and add support for your use case! 
-
-
-## Citation
-
-If you find this work or our code useful, please consider citing:
-
-```
-@misc{khanuja2023demux,
-      title={DeMuX: Data-efficient Multilingual Learning}, 
-      author={Simran Khanuja and Srinivas Gowriraj and Lucio Dery and Graham Neubig},
-      year={2023},
-      eprint={2311.06379},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL}
-}
-```
+The scripts under `scripts/train/wandb/jobs/mt` for example, use a custom dataset as the target and a HF dataset as the source.
 
 
