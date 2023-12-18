@@ -1,6 +1,6 @@
 # DeMuX: Data-efficient Multilingual Learning
-[![arXiv](https://img.shields.io/badge/arxiv-demux-blue
-)](https://arxiv.org/abs/2311.06379)
+<!-- [![arXiv](https://img.shields.io/badge/arxiv-demux-blue
+)](https://arxiv.org/abs/2311.06379) -->
 
 Code for DeMuX: Active-learning based data-selection strategies for efficient annotation of multilingual data.
 <p align="center">
