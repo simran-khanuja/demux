@@ -2,7 +2,7 @@
 [![arXiv](https://img.shields.io/badge/arxiv-demux-blue
 )](https://arxiv.org/abs/2311.06379)
 
-Code for DeMuX: Active-learning based data-selection strategies for efficient annotation of multilingual data.
+Code for DeMuX: Active-learning based data-selection strategies for efficient annotation of multilingual data. This project is licensed under the terms of the MIT license.
 <p align="center">
 <img alt="Overview of DeMuX: End-to-end approach, leveraging model embeddings in data selection" src="./overview.png" width="90%">
 </p>
